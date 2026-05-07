@@ -98,6 +98,7 @@ import {
     clampTargetPassHours,
     filterPassesForTargetWindow,
     normalizeTargetType,
+    resolveTargetDisplayName,
 } from './celestial-target-utils.js';
 
 const storageMapZoomValueKey = "target-map-zoom-level";
@@ -356,6 +357,7 @@ const TargetSatelliteMapContainer = ({}) => {
     const satellitePaths = useSelector(satellitePathsSelector);
     const satelliteTransmitters = useSelector(satelliteTransmittersSelector);
     const celestialState = useSelector((state) => state.celestial || {});
+    const monitoredRows = useSelector((state) => state.celestialMonitored?.monitored || []);
     const {location} = useSelector(state => state.location);
     const isSatelliteTarget = targetType === 'satellite';
     const missionCommand = String(trackingState?.command || '').trim();
@@ -365,13 +367,13 @@ const TargetSatelliteMapContainer = ({}) => {
         [trackingState],
     );
     const nonSatelliteTargetName = useMemo(() => {
-        const detailsName = String(satelliteDetails?.name || '').trim();
-        if (detailsName) return detailsName;
-        const fallback = targetType === 'mission'
-            ? String(trackingState?.command || '').trim()
-            : String(trackingState?.body_id || '').trim().toLowerCase();
-        return fallback || String(targetIdentifier || '').trim();
-    }, [satelliteDetails?.name, targetIdentifier, targetType, trackingState?.command, trackingState?.body_id]);
+        return resolveTargetDisplayName({
+            trackingState,
+            satelliteDetails,
+            monitoredRows,
+            celestialRows: celestialState?.celestialTracks?.celestial || [],
+        }) || String(targetIdentifier || '').trim();
+    }, [celestialState?.celestialTracks?.celestial, monitoredRows, satelliteDetails, targetIdentifier, trackingState]);
     const nonSatellitePayload = useMemo(
         () => buildTargetCelestialPayload({
             // Keep payload dependencies scoped to stable target identity fields.

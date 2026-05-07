@@ -5,7 +5,14 @@ import PassTimeline from '../passes/timeline/pass-timeline.jsx';
 import CelestialPassTimeline from '../celestial/celestial-pass-timeline.jsx';
 import { useSocket } from '../common/socket.jsx';
 import { fetchCelestialTracks, fetchSolarSystemScene } from '../celestial/celestial-slice.jsx';
-import { buildTargetCelestialPayload, buildTargetKeyFromTrackingState, clampTargetPassHours, filterPassesForTargetWindow, normalizeTargetType } from './celestial-target-utils.js';
+import {
+    buildTargetCelestialPayload,
+    buildTargetKeyFromTrackingState,
+    clampTargetPassHours,
+    filterPassesForTargetWindow,
+    normalizeTargetType,
+    resolveTargetDisplayName,
+} from './celestial-target-utils.js';
 
 const TargetPassTimelineComponent = (props) => {
     const dispatch = useDispatch();
@@ -18,6 +25,7 @@ const TargetPassTimelineComponent = (props) => {
     const trackerInstances = useSelector((state) => state.trackerInstances?.instances || []);
     const nextPassesHours = useSelector((state) => state.targetSatTrack.nextPassesHours || 24.0);
     const celestialState = useSelector((state) => state.celestial || {});
+    const monitoredRows = useSelector((state) => state.celestialMonitored?.monitored || []);
     const groundStationLocation = useSelector((state) => state.location.location);
     const timezone = useSelector(
         (state) => {
@@ -33,12 +41,13 @@ const TargetPassTimelineComponent = (props) => {
         [trackingState],
     );
     const targetName = useMemo(() => {
-        const detailsName = String(satelliteDetails?.name || '').trim();
-        if (detailsName) return detailsName;
-        if (targetType === 'mission') return String(trackingState?.command || '').trim();
-        if (targetType === 'body') return String(trackingState?.body_id || '').trim().toLowerCase();
-        return '';
-    }, [satelliteDetails?.name, targetType, trackingState?.body_id, trackingState?.command]);
+        return resolveTargetDisplayName({
+            trackingState,
+            satelliteDetails,
+            monitoredRows,
+            celestialRows: celestialState?.celestialTracks?.celestial || [],
+        });
+    }, [celestialState?.celestialTracks?.celestial, monitoredRows, satelliteDetails, trackingState]);
     const nonSatellitePayload = useMemo(
         () => buildTargetCelestialPayload({
             trackingState,

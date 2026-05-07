@@ -144,6 +144,7 @@ const cloneDefaultSatelliteData = () => ({
 
 const cloneDefaultTrackingState = () => ({
     target_type: 'satellite',
+    target_name: '',
     command: null,
     body_id: null,
     norad_id: '',
@@ -408,6 +409,7 @@ export const setTrackingStateInBackend = createAsyncThunk(
         const {
             norad_id,
             target_type,
+            target_name,
             command,
             body_id,
             rotator_state,
@@ -420,12 +422,16 @@ export const setTrackingStateInBackend = createAsyncThunk(
             vfo1,
             vfo2,
         } = data;
+        const resolvedTargetName = Object.prototype.hasOwnProperty.call(data || {}, 'target_name')
+            ? target_name
+            : currentTrackingState?.target_name;
         const trackState = {
             'name': 'satellite-tracking',
             'tracker_id': trackerId,
             'value': {
                 'norad_id': norad_id,
                 'target_type': target_type,
+                'target_name': resolvedTargetName,
                 'command': command,
                 'body_id': body_id,
                 'rotator_state': rotator_state,
@@ -444,7 +450,7 @@ export const setTrackingStateInBackend = createAsyncThunk(
         );
         const rotatorKeys = ['rotator_state', 'rotator_id'];
         const rigKeys = ['rig_state', 'rig_id', 'transmitter_id', 'rig_vfo', 'vfo1', 'vfo2'];
-        const targetKeys = ['norad_id', 'group_id', 'target_type', 'command', 'body_id'];
+        const targetKeys = ['norad_id', 'group_id', 'target_type', 'target_name', 'command', 'body_id'];
         const hasRotatorChanges = changedKeys.some((key) => rotatorKeys.includes(key));
         const hasRigChanges = changedKeys.some((key) => rigKeys.includes(key));
         const hasTargetChanges = changedKeys.some((key) => targetKeys.includes(key));

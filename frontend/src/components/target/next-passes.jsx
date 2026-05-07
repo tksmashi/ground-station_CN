@@ -56,6 +56,7 @@ import {
     buildTargetKeyFromTrackingState,
     filterPassesForTargetWindow,
     normalizeTargetType,
+    resolveTargetDisplayName,
 } from './celestial-target-utils.js';
 
 const getPassStatus = (row, now = new Date()) => {
@@ -519,6 +520,7 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
     const trackingState = useSelector((state) => state.targetSatTrack?.trackingState || {});
     const satelliteDetails = useSelector((state) => state.targetSatTrack?.satelliteData?.details || {});
     const celestialState = useSelector((state) => state.celestial || {});
+    const monitoredRows = useSelector((state) => state.celestialMonitored?.monitored || []);
     const [containerHeight, setContainerHeight] = useState(0);
     const containerRef = useRef(null);
     const {
@@ -542,12 +544,13 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
         [trackingState],
     );
     const nonSatelliteTargetName = useMemo(() => {
-        const detailsName = String(satelliteDetails?.name || '').trim();
-        if (detailsName) return detailsName;
-        if (targetType === 'mission') return String(trackingState?.command || '').trim();
-        if (targetType === 'body') return String(trackingState?.body_id || '').trim().toLowerCase();
-        return '';
-    }, [satelliteDetails?.name, targetType, trackingState?.body_id, trackingState?.command]);
+        return resolveTargetDisplayName({
+            trackingState,
+            satelliteDetails,
+            monitoredRows,
+            celestialRows: celestialState?.celestialTracks?.celestial || [],
+        });
+    }, [celestialState?.celestialTracks?.celestial, monitoredRows, satelliteDetails, trackingState]);
     const minHeight = 200;
     const maxHeight = 400;
     const hasLoadedFromStorageRef = useRef(false);

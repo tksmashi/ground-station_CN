@@ -65,6 +65,7 @@ import { deleteTrackerInstance } from "./tracker-instances-slice.jsx";
 import { cancelRunningObservation } from "../scheduler/scheduler-slice.jsx";
 import { resolveTabHardwareLedStatus } from "../common/hardware-status.js";
 import { fetchMonitoredCelestial } from "../celestial/monitored-slice.jsx";
+import { resolveTargetDisplayName } from './celestial-target-utils.js';
 
 const TARGET_SLOT_ID_PATTERN = /^target-(\d+)$/;
 const ADD_TARGET_TAB_VALUE = '__add-target__';
@@ -573,9 +574,11 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
 
     const buildTargetTrackingPatch = useCallback((target) => {
         const targetType = target?.targetType || TARGET_TYPES.SATELLITE;
+        const targetName = String(target?.targetName || '').trim();
         if (targetType === TARGET_TYPES.MISSION) {
             return {
                 target_type: TARGET_TYPES.MISSION,
+                target_name: targetName || String(target?.command || '').trim(),
                 command: String(target?.command || '').trim(),
                 body_id: null,
                 norad_id: null,
@@ -585,6 +588,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
         if (targetType === TARGET_TYPES.BODY) {
             return {
                 target_type: TARGET_TYPES.BODY,
+                target_name: targetName || String(target?.bodyId || '').trim().toLowerCase(),
                 body_id: String(target?.bodyId || '').trim().toLowerCase(),
                 command: null,
                 norad_id: null,
@@ -593,6 +597,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
         }
         return {
             target_type: TARGET_TYPES.SATELLITE,
+            target_name: targetName || String(target?.noradId || '').trim(),
             norad_id: target?.noradId,
             group_id: target?.groupId || '',
             command: null,
@@ -734,6 +739,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                 targetType: TARGET_TYPES.SATELLITE,
                 noradId: createSelectedSatellite.norad_id,
                 groupId: selectedGroupId,
+                targetName: String(createSelectedSatellite?.name || createSelectedSatellite?.norad_id || '').trim(),
             });
             nextTransmitters = getTransmittersFromSatellite(createSelectedSatellite);
             nextSatelliteId = createSelectedSatellite.norad_id;
@@ -746,6 +752,11 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
             payloadTarget = buildTargetTrackingPatch({
                 targetType: TARGET_TYPES.MISSION,
                 command: missionCommand,
+                targetName: String(
+                    createSelectedMission?.target_name
+                    || createSelectedMission?.display_name
+                    || missionCommand
+                ).trim(),
             });
         } else {
             const bodyId = String(createSelectedBodyId || '').trim().toLowerCase();
@@ -756,6 +767,10 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
             payloadTarget = buildTargetTrackingPatch({
                 targetType: TARGET_TYPES.BODY,
                 bodyId,
+                targetName: String(
+                    bodyCatalogOptions.find((entry) => String(entry?.body_id || '').trim().toLowerCase() === bodyId)?.name
+                    || bodyId
+                ).trim(),
             });
         }
 
@@ -806,6 +821,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
         socket,
         targetTrackerInstances,
         trackingState,
+        bodyCatalogOptions,
     ]);
 
     const handleRetargetSearchSelect = useCallback(async (targetOption) => {
@@ -863,13 +879,11 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
         const targetType = normalizeTargetType(effectiveTrackingState);
         const rotatorData = view?.rotatorData || {};
         const rigData = view?.rigData || {};
-        const targetName = String(
-            view?.satelliteData?.details?.name
-            || effectiveTrackingState?.target_name
-            || effectiveTrackingState?.command
-            || effectiveTrackingState?.body_id
-            || 'No target'
-        );
+        const targetName = resolveTargetDisplayName({
+            trackingState: effectiveTrackingState,
+            satelliteDetails: view?.satelliteData?.details || {},
+            monitoredRows: monitoredCelestialRows,
+        }) || 'No target';
         const targetIdentifier = getTrackingTargetIdentifier(effectiveTrackingState) || 'none';
         const rotatorId = view?.selectedRotator || instance?.rotator_id || effectiveTrackingState?.rotator_id || 'none';
         const normalizedTabRotatorId = normalizeAssignedResourceId(rotatorId);
@@ -929,7 +943,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
             hasScheduledObservation: upcomingObs.length > 0,
             linkedObservations,
         };
-    }), [tabTrackerInstances, trackerViews, schedulerObservations, rotatorRows]);
+    }), [tabTrackerInstances, trackerViews, schedulerObservations, rotatorRows, monitoredCelestialRows]);
 
     const tabValue = targetOptions.some((option) => option.trackerId === trackerId)
         ? trackerId

@@ -65,7 +65,10 @@ import SatelliteEditDialog from "../satellites/satellite-edit-dialog.jsx";
 import {fetchSatellite} from "./target-slice.jsx";
 import {useSocket} from "../common/socket.jsx";
 import { targetIdentifierSelector, targetTypeSelector, trackingStateSelector } from "./state-selectors.jsx";
-import { normalizeTargetType as normalizeTrackingTargetType } from './celestial-target-utils.js';
+import {
+    normalizeTargetType as normalizeTrackingTargetType,
+    resolveTargetDisplayName,
+} from './celestial-target-utils.js';
 // ElevationDisplay not used in target page; using satelliteData for elevation per request
 
 const TargetSatelliteInfoIsland = () => {
@@ -77,6 +80,8 @@ const TargetSatelliteInfoIsland = () => {
     const targetType = useSelector(targetTypeSelector);
     const targetIdentifier = useSelector(targetIdentifierSelector);
     const trackingState = useSelector(trackingStateSelector);
+    const celestialState = useSelector((state) => state.celestial || {});
+    const monitoredRows = useSelector((state) => state.celestialMonitored?.monitored || []);
     const trackerInstances = useSelector((state) => state.trackerInstances?.instances || []);
     const selectedSatellitePositions = useSelector(state => state.overviewSatTrack.selectedSatellitePositions);
     const navigate = useNavigate();
@@ -105,12 +110,21 @@ const TargetSatelliteInfoIsland = () => {
     // Mission/body retargets can temporarily show old satellite telemetry until worker updates arrive.
     const hasCurrentNonSatelliteTelemetry = !isSatelliteTarget && detailsTargetType === targetType;
     const nonSatelliteTargetName = String(
-        (hasCurrentNonSatelliteTelemetry ? satelliteData?.details?.name : '')
-        || (targetType === 'mission'
+        resolveTargetDisplayName({
+            trackingState,
+            satelliteDetails: hasCurrentNonSatelliteTelemetry ? (satelliteData?.details || {}) : {},
+            monitoredRows,
+            celestialRows: celestialState?.celestialTracks?.celestial || [],
+        })
+        || targetIdentifier
+        || ''
+    ).trim();
+    const nonSatelliteIdentifier = String(
+        (targetType === 'mission'
             ? trackingState?.command
             : trackingState?.body_id)
         || targetIdentifier
-        || ''
+        || '-'
     ).trim();
     const nonSatelliteAzimuth = hasCurrentNonSatelliteTelemetry ? Number(satelliteData?.position?.az) : NaN;
     const nonSatelliteElevation = hasCurrentNonSatelliteTelemetry ? Number(satelliteData?.position?.el) : NaN;
@@ -996,7 +1010,7 @@ const TargetSatelliteInfoIsland = () => {
                             {nonSatelliteTargetName || '-'}
                         </Typography>
                         <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
-                            {targetType === 'mission' ? 'Mission' : 'Body'} · {targetIdentifier || '-'}
+                            {targetType === 'mission' ? 'Mission Command' : 'Body ID'} · {nonSatelliteIdentifier || '-'}
                         </Typography>
                         <Box sx={{ mt: 1, display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
                             <Chip size="small" color="info" label={`Rotator: ${trackingState?.rotator_state || '-'}`} />
@@ -1025,10 +1039,14 @@ const TargetSatelliteInfoIsland = () => {
                             <DataPoint icon={TrackChangesIcon} label="Target Elevation" value={formatAngle(nonSatelliteElevation)} emphasis />
                         </Grid>
                         <Grid size={6}>
-                            <DataPoint icon={InfoOutlinedIcon} label="Mission Command" value={targetType === 'mission' ? (trackingState?.command || '-') : '-'} />
+                            <DataPoint icon={InfoOutlinedIcon} label="Target Type" value={targetType === 'mission' ? 'Mission' : 'Body'} />
                         </Grid>
                         <Grid size={6}>
-                            <DataPoint icon={InfoOutlinedIcon} label="Body ID" value={targetType === 'body' ? (trackingState?.body_id || '-') : '-'} />
+                            <DataPoint
+                                icon={InfoOutlinedIcon}
+                                label={targetType === 'mission' ? 'Mission Command' : 'Body ID'}
+                                value={nonSatelliteIdentifier || '-'}
+                            />
                         </Grid>
                         <Grid size={6}>
                             <DataPoint icon={MyLocationIcon} label="Rotator" value={String(trackingState?.rotator_id || '-')} />

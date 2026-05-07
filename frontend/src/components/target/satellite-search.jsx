@@ -94,6 +94,44 @@ const buildOptionLabel = (option) => {
     return String(option?.target_name || option?.display_name || option?.name || option?.command || option?.body_id || '').trim();
 };
 
+const buildOptionSearchText = (option) => {
+    if (!option || typeof option !== 'object') {
+        return '';
+    }
+    const targetType = String(option?.target_type || '').trim().toLowerCase();
+    if (targetType === TARGET_TYPES.MISSION) {
+        return [
+            option?.target_name,
+            option?.display_name,
+            option?.command,
+            option?.target_identifier,
+        ]
+            .map((value) => String(value || '').trim().toLowerCase())
+            .filter(Boolean)
+            .join(' ');
+    }
+    if (targetType === TARGET_TYPES.BODY) {
+        return [
+            option?.target_name,
+            option?.name,
+            option?.body_id,
+            option?.target_identifier,
+        ]
+            .map((value) => String(value || '').trim().toLowerCase())
+            .filter(Boolean)
+            .join(' ');
+    }
+    return [
+        option?.target_name,
+        option?.name,
+        option?.norad_id,
+        option?.target_identifier,
+    ]
+        .map((value) => String(value || '').trim().toLowerCase())
+        .filter(Boolean)
+        .join(' ');
+};
+
 const SatelliteSearchAutocomplete = React.memo(function SatelliteSearchAutocomplete({
     onTargetSelect,
     disabled = false,
@@ -221,6 +259,13 @@ const SatelliteSearchAutocomplete = React.memo(function SatelliteSearchAutocompl
         }
         return false;
     }, [monitoredBodySet, monitoredMissionSet]);
+    const filterOptions = React.useCallback((candidateOptions, state) => {
+        const keyword = String(state?.inputValue || '').trim().toLowerCase();
+        if (!keyword) {
+            return candidateOptions;
+        }
+        return candidateOptions.filter((option) => buildOptionSearchText(option).includes(keyword));
+    }, []);
 
     return (
         <Autocomplete
@@ -237,6 +282,7 @@ const SatelliteSearchAutocomplete = React.memo(function SatelliteSearchAutocompl
             onChange={handleOptionSelect}
             isOptionEqualToValue={(option, selectedValue) => option?.id === selectedValue?.id}
             getOptionLabel={buildOptionLabel}
+            filterOptions={filterOptions}
             options={options}
             loading={loading}
             PaperComponent={(paperProps) => (

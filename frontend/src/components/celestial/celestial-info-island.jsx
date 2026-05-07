@@ -14,6 +14,7 @@ import { setRotator, setTrackerId, setTrackingStateInBackend } from '../target/t
 import { useTargetRotatorSelectionDialog } from '../target/use-target-rotator-selection-dialog.jsx';
 import { toast } from '../../utils/toast-with-timestamp.jsx';
 import BodyIcon from './body-icon.jsx';
+import { resolveTargetDisplayName } from '../target/celestial-target-utils.js';
 
 const AU_IN_KM = 149597870.7;
 const SECONDS_PER_DAY = 86400;
@@ -164,25 +165,6 @@ const CelestialInfoIsland = ({
         || selectedMonitored?.targetType
         || (normalizedTargetKey.startsWith('body:') ? 'body' : 'mission'),
     ).toLowerCase();
-    const targetName = String(
-        selectedTrack?.name
-        || selectedMonitored?.displayName
-        || selectedTrack?.command
-        || selectedMonitored?.command
-        || normalizedTargetKey
-        || '',
-    );
-    const targetIdentifier = targetType === 'body'
-        ? String(
-            selectedTrack?.body_id
-            || selectedMonitored?.bodyId
-            || selectedMonitored?.body_id
-            || selectedTrack?.command
-            || selectedMonitored?.command
-            || '-'
-        )
-        : String(selectedTrack?.command || selectedMonitored?.command || '-');
-    const selectedColor = normalizeHexColor(selectedTrack?.color || selectedMonitored?.color || '');
     const missionCommand = String(
         selectedTrack?.command
         || selectedMonitored?.command
@@ -194,6 +176,18 @@ const CelestialInfoIsland = ({
         || selectedMonitored?.body_id
         || (normalizedTargetKey.startsWith('body:') ? normalizedTargetKey.slice('body:'.length) : ''),
     ).trim().toLowerCase();
+    const targetName = resolveTargetDisplayName({
+        trackingState: {
+            target_type: targetType,
+            target_name: selectedTrack?.name || selectedMonitored?.displayName || selectedMonitored?.name || '',
+            command: missionCommand || null,
+            body_id: bodyTargetId || null,
+        },
+        monitoredRows,
+        celestialRows: tracks,
+    });
+    const targetIdentifier = targetType === 'body' ? (bodyTargetId || '-') : (missionCommand || '-');
+    const selectedColor = normalizeHexColor(selectedTrack?.color || selectedMonitored?.color || '');
     const isTargetable = Boolean(
         normalizedTargetKey
         && (targetType === 'body' ? bodyTargetId : missionCommand)
@@ -285,11 +279,13 @@ const CelestialInfoIsland = ({
         const targetPatch = targetType === 'body'
             ? {
                 target_type: 'body',
+                target_name: targetName || bodyTargetId,
                 body_id: bodyTargetId,
                 command: null,
             }
             : {
                 target_type: 'mission',
+                target_name: targetName || missionCommand,
                 command: missionCommand,
                 body_id: null,
             };
@@ -440,6 +436,11 @@ const CelestialInfoIsland = ({
 
                             <Box sx={{ p: 1.5 }}>
                                 <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 1.25 }}>
+                                    <MetricPair label="Target Type" value={targetType === 'body' ? 'Body' : 'Mission'} />
+                                    <MetricPair
+                                        label={targetType === 'body' ? 'Body ID' : 'Mission Command'}
+                                        value={targetIdentifier || '-'}
+                                    />
                                     <MetricPair label="Elevation" value={formatNumber(elevationDeg, 1, ' deg')} />
                                     <MetricPair label="Azimuth" value={formatNumber(azimuthDeg, 1, ' deg')} />
                                     <MetricPair label="Distance from Sun" value={formatNumber(distanceFromSunAu, 4, ' AU')} />
