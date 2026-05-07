@@ -42,7 +42,6 @@ import {
 } from "@mui/material";
 import { useDispatch, useSelector } from "react-redux";
 import { useSocket } from "../common/socket.jsx";
-import { useTranslation } from 'react-i18next';
 import CloseIcon from '@mui/icons-material/Close';
 import AddCircleIcon from '@mui/icons-material/AddCircle';
 import LocationSearchingIcon from '@mui/icons-material/LocationSearching';
@@ -65,9 +64,40 @@ import { useTargetRotatorSelectionDialog } from "./use-target-rotator-selection-
 import { deleteTrackerInstance } from "./tracker-instances-slice.jsx";
 import { cancelRunningObservation } from "../scheduler/scheduler-slice.jsx";
 import { resolveTabHardwareLedStatus } from "../common/hardware-status.js";
+import { fetchMonitoredCelestial } from "../celestial/monitored-slice.jsx";
 
 const TARGET_SLOT_ID_PATTERN = /^target-(\d+)$/;
 const ADD_TARGET_TAB_VALUE = '__add-target__';
+const TARGET_TYPES = Object.freeze({
+    SATELLITE: 'satellite',
+    MISSION: 'mission',
+    BODY: 'body',
+});
+
+const normalizeTargetType = (trackingState = {}) => {
+    const explicitType = String(trackingState?.target_type || '').trim().toLowerCase();
+    if (explicitType === TARGET_TYPES.SATELLITE || explicitType === TARGET_TYPES.MISSION || explicitType === TARGET_TYPES.BODY) {
+        return explicitType;
+    }
+    if (String(trackingState?.command || '').trim()) {
+        return TARGET_TYPES.MISSION;
+    }
+    if (String(trackingState?.body_id || '').trim()) {
+        return TARGET_TYPES.BODY;
+    }
+    return TARGET_TYPES.SATELLITE;
+};
+
+const getTrackingTargetIdentifier = (trackingState = {}) => {
+    const targetType = normalizeTargetType(trackingState);
+    if (targetType === TARGET_TYPES.MISSION) {
+        return String(trackingState?.command || '').trim();
+    }
+    if (targetType === TARGET_TYPES.BODY) {
+        return String(trackingState?.body_id || '').trim().toLowerCase();
+    }
+    return String(trackingState?.norad_id || '').trim();
+};
 
 const normalizeAssignedResourceId = (value) => {
     const normalized = String(value ?? '').trim();
@@ -246,7 +276,6 @@ const resolveTabLedPresentation = ({ source, status, usedRigFallback }) => {
 const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBar() {
     const { socket } = useSocket();
     const dispatch = useDispatch();
-    const { t } = useTranslation('target');
 
     const {
         trackingState,
@@ -256,10 +285,10 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
     const schedulerObservations = useSelector((state) => state.scheduler?.observations || []);
     const rigRows = useSelector((state) => state.rigs?.rigs || []);
     const rotatorRows = useSelector((state) => state.rotators?.rotators || []);
+    const monitoredCelestialRows = useSelector((state) => state.celestialMonitored?.monitored || []);
 
     const trackerViews = useSelector((state) => state.targetSatTrack?.trackerViews || {});
     const { requestRotatorForTarget, dialog: rotatorSelectionDialog } = useTargetRotatorSelectionDialog();
-    const [searchResetKey, setSearchResetKey] = useState(0);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [pendingDeleteTarget, setPendingDeleteTarget] = useState(null);
     const [deleteTargetBusy, setDeleteTargetBusy] = useState(false);
@@ -268,16 +297,63 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
     const [abortObservationBusy, setAbortObservationBusy] = useState(false);
     const [createDialogOpen, setCreateDialogOpen] = useState(false);
     const [createTargetBusy, setCreateTargetBusy] = useState(false);
+    const [createTargetType, setCreateTargetType] = useState(TARGET_TYPES.SATELLITE);
     const [createSearchOpen, setCreateSearchOpen] = useState(false);
     const [createSearchOptions, setCreateSearchOptions] = useState([]);
     const [createSearchLoading, setCreateSearchLoading] = useState(false);
     const [createSelectedSatellite, setCreateSelectedSatellite] = useState(null);
+    const [createSelectedMission, setCreateSelectedMission] = useState(null);
+    const [createSelectedBodyId, setCreateSelectedBodyId] = useState('');
     const [createSelectedRigId, setCreateSelectedRigId] = useState('none');
     const [createSelectedRotatorId, setCreateSelectedRotatorId] = useState('none');
     const [createDialogError, setCreateDialogError] = useState('');
+    const [catalogLoading, setCatalogLoading] = useState(false);
+    const [catalogError, setCatalogError] = useState('');
+    const [catalogEntries, setCatalogEntries] = useState([]);
+    const [bodyCatalogLoading, setBodyCatalogLoading] = useState(false);
+    const [bodyCatalogError, setBodyCatalogError] = useState('');
+    const [bodyCatalogEntries, setBodyCatalogEntries] = useState([]);
     const targetTrackerInstances = useMemo(
         () => trackerInstances.filter((instance) => parseTargetSlotNumber(instance?.tracker_id) !== null),
         [trackerInstances]
+    );
+    const missionCatalogEntries = useMemo(
+        () => (Array.isArray(catalogEntries) ? catalogEntries : [])
+            .map((entry) => ({
+                command: String(entry?.command || '').trim(),
+                display_name: String(entry?.display_name || entry?.command || '').trim(),
+                mission_status: String(entry?.mission_status || 'unknown').trim().toLowerCase(),
+                status_label: String(entry?.status_label || '').trim(),
+            }))
+            .filter((entry) => entry.command.length > 0),
+        [catalogEntries]
+    );
+    const monitoredMissionCommands = useMemo(
+        () => (Array.isArray(monitoredCelestialRows) ? monitoredCelestialRows : [])
+            .filter((entry) => String(entry?.targetType || entry?.target_type || '').toLowerCase() === TARGET_TYPES.MISSION)
+            .filter((entry) => String(entry?.command || '').trim().length > 0)
+            .filter((entry) => entry?.enabled !== false)
+            .map((entry) => String(entry?.command || '').trim().toLowerCase()),
+        [monitoredCelestialRows],
+    );
+    const monitoredBodyIds = useMemo(
+        () => (Array.isArray(monitoredCelestialRows) ? monitoredCelestialRows : [])
+            .filter((entry) => String(entry?.targetType || entry?.target_type || '').toLowerCase() === TARGET_TYPES.BODY)
+            .filter((entry) => String(entry?.bodyId || entry?.body_id || '').trim().length > 0)
+            .filter((entry) => entry?.enabled !== false)
+            .map((entry) => String(entry?.bodyId || entry?.body_id || '').trim().toLowerCase()),
+        [monitoredCelestialRows],
+    );
+    const bodyCatalogOptions = useMemo(
+        () => (Array.isArray(bodyCatalogEntries) ? bodyCatalogEntries : [])
+            .map((entry) => ({
+                body_id: String(entry?.body_id || '').trim().toLowerCase(),
+                name: String(entry?.name || entry?.body_id || '').trim(),
+                body_type: String(entry?.body_type || '').trim(),
+                parent_body_id: String(entry?.parent_body_id || '').trim().toLowerCase(),
+            }))
+            .filter((entry) => entry.body_id.length > 0),
+        [bodyCatalogEntries]
     );
     const runningObservationTrackerIds = useMemo(() => {
         const running = schedulerObservations.filter((obs) => obs?.status === 'running');
@@ -320,6 +396,59 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
         }
         return message;
     }, []);
+
+    useEffect(() => {
+        if (!socket) {
+            return;
+        }
+        let active = true;
+        setCatalogLoading(true);
+        setCatalogError('');
+        socket.emit('data_request', 'get-spacecraft-index', { limit: 1000 }, (response) => {
+            if (!active) return;
+            if (response?.success) {
+                setCatalogEntries(Array.isArray(response?.data) ? response.data : []);
+                setCatalogError('');
+            } else {
+                setCatalogEntries([]);
+                setCatalogError(response?.error || 'Failed to load mission catalog.');
+            }
+            setCatalogLoading(false);
+        });
+        return () => {
+            active = false;
+        };
+    }, [socket]);
+
+    useEffect(() => {
+        if (!socket) {
+            return;
+        }
+        dispatch(fetchMonitoredCelestial({ socket }));
+    }, [dispatch, socket]);
+
+    useEffect(() => {
+        if (!socket) {
+            return;
+        }
+        let active = true;
+        setBodyCatalogLoading(true);
+        setBodyCatalogError('');
+        socket.emit('data_request', 'get-celestial-body-catalog', null, (response) => {
+            if (!active) return;
+            if (response?.success) {
+                setBodyCatalogEntries(Array.isArray(response?.data) ? response.data : []);
+                setBodyCatalogError('');
+            } else {
+                setBodyCatalogEntries([]);
+                setBodyCatalogError(response?.error || 'Failed to load celestial body catalog.');
+            }
+            setBodyCatalogLoading(false);
+        });
+        return () => {
+            active = false;
+        };
+    }, [socket]);
 
     const handleTargetTabChange = useCallback((event, value) => {
         if (!value) return;
@@ -400,10 +529,13 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
     }, []);
 
     const resetCreateDialogState = useCallback(() => {
+        setCreateTargetType(TARGET_TYPES.SATELLITE);
         setCreateSearchOpen(false);
         setCreateSearchOptions([]);
         setCreateSearchLoading(false);
         setCreateSelectedSatellite(null);
+        setCreateSelectedMission(null);
+        setCreateSelectedBodyId('');
         setCreateSelectedRigId('none');
         setCreateSelectedRotatorId('none');
         setCreateDialogError('');
@@ -439,77 +571,48 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
         });
     }, [socket]);
 
-    const handleCreateTargetSubmit = useCallback(async () => {
-        setCreateDialogError('');
-        if (!createSelectedSatellite?.norad_id) {
-            toast.error('Please select a satellite first');
-            return;
+    const buildTargetTrackingPatch = useCallback((target) => {
+        const targetType = target?.targetType || TARGET_TYPES.SATELLITE;
+        if (targetType === TARGET_TYPES.MISSION) {
+            return {
+                target_type: TARGET_TYPES.MISSION,
+                command: String(target?.command || '').trim(),
+                body_id: null,
+                norad_id: null,
+                group_id: null,
+            };
         }
-
-        const selectedGroupId = createSelectedSatellite?.groups?.[0]?.id || trackingState?.group_id || '';
-        if (!selectedGroupId) {
-            toast.error('Selected satellite has no group mapping');
-            return;
+        if (targetType === TARGET_TYPES.BODY) {
+            return {
+                target_type: TARGET_TYPES.BODY,
+                body_id: String(target?.bodyId || '').trim().toLowerCase(),
+                command: null,
+                norad_id: null,
+                group_id: null,
+            };
         }
-
-        const trackerSlotId = deriveNextTrackerSlotId(targetTrackerInstances);
-        const normalizedRigId = createSelectedRigId || 'none';
-        const normalizedRotatorId = createSelectedRotatorId || 'none';
-        const nextTransmitters = getTransmittersFromSatellite(createSelectedSatellite);
-
-        // New targets must always start disconnected, regardless of the currently active target state.
-        const payload = {
-            tracker_id: trackerSlotId,
-            norad_id: createSelectedSatellite.norad_id,
-            group_id: selectedGroupId,
-            rig_id: normalizedRigId,
-            rotator_id: normalizedRotatorId,
-            transmitter_id: 'none',
-            rig_state: 'disconnected',
-            rotator_state: 'disconnected',
-            rig_vfo: 'none',
-            vfo1: 'uplink',
-            vfo2: 'downlink',
+        return {
+            target_type: TARGET_TYPES.SATELLITE,
+            norad_id: target?.noradId,
+            group_id: target?.groupId || '',
+            command: null,
+            body_id: null,
         };
+    }, []);
 
-        try {
-            setCreateTargetBusy(true);
-            dispatch(setTrackerId(trackerSlotId));
-            dispatch(setSatelliteId(createSelectedSatellite.norad_id));
-            dispatch(setRotator({ value: normalizedRotatorId, trackerId: trackerSlotId }));
-            dispatch(setRadioRig({ value: normalizedRigId, trackerId: trackerSlotId }));
-            dispatch(setAvailableTransmitters(nextTransmitters));
-            await dispatch(setTrackingStateInBackend({ socket, data: payload })).unwrap();
-            setCreateDialogOpen(false);
-            resetCreateDialogState();
-        } catch (error) {
-            const errorMessage = emitTrackingErrorToast(
-                error,
-                'Failed to create target',
-                { suppressLimitToast: true },
-            );
-            setCreateDialogError(String(errorMessage || 'Failed to create target'));
-            setCreateTargetBusy(false);
+    const handleRetargetTarget = useCallback(async (target) => {
+        const targetType = target?.targetType || TARGET_TYPES.SATELLITE;
+        if (targetType === TARGET_TYPES.SATELLITE && !target?.noradId) {
+            return;
         }
-    }, [
-        createSelectedRigId,
-        createSelectedRotatorId,
-        createSelectedSatellite,
-        dispatch,
-        emitTrackingErrorToast,
-        getTransmittersFromSatellite,
-        resetCreateDialogState,
-        socket,
-        targetTrackerInstances,
-        trackingState,
-    ]);
-
-    const handleRetargetSatelliteSelect = useCallback(async (satellite) => {
-        if (!satellite?.norad_id) {
+        if (targetType === TARGET_TYPES.MISSION && !String(target?.command || '').trim()) {
+            return;
+        }
+        if (targetType === TARGET_TYPES.BODY && !String(target?.bodyId || '').trim()) {
             return;
         }
 
-        await requestRotatorForTarget(satellite?.name, {
+        await requestRotatorForTarget(target?.targetName || 'target', {
             onSubmit: async (selectedAssignment) => {
                 if (!selectedAssignment) {
                     return { success: false };
@@ -527,10 +630,13 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                     (instance) => String(instance?.tracker_id || '') === selectedTrackerId
                 );
                 const selectedTrackerView = trackerViews?.[selectedTrackerId] || {};
-                // Preserve runtime state from the destination slot to avoid cross-slot state leakage.
                 const selectedTrackerState = selectedTrackerView?.trackingState || selectedTrackerInstance?.tracking_state || {};
-                const selectedGroupId = satellite?.groups?.[0]?.id || selectedTrackerState?.group_id || trackingState?.group_id || "";
-                const nextTransmitters = getTransmittersFromSatellite(satellite);
+                const selectedGroupId = targetType === TARGET_TYPES.SATELLITE
+                    ? (target?.groupId || selectedTrackerState?.group_id || trackingState?.group_id || '')
+                    : null;
+                const nextTransmitters = targetType === TARGET_TYPES.SATELLITE
+                    ? (target?.transmitters || [])
+                    : [];
                 const nextRigId = isCreateNewSlot
                     ? assignmentRigId
                     : String(
@@ -540,19 +646,22 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                         ?? 'none'
                     );
                 const nextRotatorId = isCreateNewSlot ? 'none' : rotatorId;
-                const nextTransmitterId = isCreateNewSlot
+                const nextTransmitterId = isCreateNewSlot || targetType !== TARGET_TYPES.SATELLITE
                     ? 'none'
                     : String(selectedTrackerState?.transmitter_id || 'none');
+                const targetPatch = buildTargetTrackingPatch({
+                    ...target,
+                    groupId: selectedGroupId,
+                });
 
                 const data = isCreateNewSlot
                     ? {
                         tracker_id: selectedTrackerId,
-                        norad_id: satellite.norad_id,
-                        group_id: selectedGroupId,
+                        ...targetPatch,
                         rig_id: nextRigId,
                         rotator_id: nextRotatorId,
                         transmitter_id: 'none',
-                        rig_state: 'disconnected',
+                        rig_state: targetType === TARGET_TYPES.SATELLITE ? 'disconnected' : 'stopped',
                         rotator_state: 'disconnected',
                         rig_vfo: 'none',
                         vfo1: 'uplink',
@@ -561,8 +670,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                     : {
                         ...selectedTrackerState,
                         tracker_id: selectedTrackerId,
-                        norad_id: satellite.norad_id,
-                        group_id: selectedGroupId,
+                        ...targetPatch,
                         rig_id: nextRigId,
                         rotator_id: nextRotatorId,
                         transmitter_id: nextTransmitterId,
@@ -571,11 +679,10 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                 try {
                     await dispatch(setTrackingStateInBackend({ socket, data })).unwrap();
                     dispatch(setTrackerId(selectedTrackerId));
-                    dispatch(setSatelliteId(satellite.norad_id));
+                    dispatch(setSatelliteId(targetType === TARGET_TYPES.SATELLITE ? target?.noradId : ''));
                     dispatch(setRotator({ value: nextRotatorId, trackerId: selectedTrackerId }));
                     dispatch(setRadioRig({ value: nextRigId, trackerId: selectedTrackerId }));
                     dispatch(setAvailableTransmitters(nextTransmitters));
-                    setSearchResetKey((value) => value + 1);
                     return { success: true };
                 } catch (error) {
                     const errorCode = String(error?.error || error?.code || '').trim();
@@ -593,15 +700,158 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
             },
         });
     }, [
+        buildTargetTrackingPatch,
         dispatch,
         emitTrackingErrorToast,
-        getTransmittersFromSatellite,
         requestRotatorForTarget,
         socket,
         trackerInstances,
         trackerViews,
         trackingState,
     ]);
+
+    const handleCreateTargetSubmit = useCallback(async () => {
+        setCreateDialogError('');
+        const trackerSlotId = deriveNextTrackerSlotId(targetTrackerInstances);
+        const normalizedRigId = createSelectedRigId || 'none';
+        const normalizedRotatorId = createSelectedRotatorId || 'none';
+
+        let payloadTarget = {};
+        let nextTransmitters = [];
+        let nextSatelliteId = '';
+
+        if (createTargetType === TARGET_TYPES.SATELLITE) {
+            if (!createSelectedSatellite?.norad_id) {
+                toast.error('Please select a satellite first');
+                return;
+            }
+            const selectedGroupId = createSelectedSatellite?.groups?.[0]?.id || trackingState?.group_id || '';
+            if (!selectedGroupId) {
+                toast.error('Selected satellite has no group mapping');
+                return;
+            }
+            payloadTarget = buildTargetTrackingPatch({
+                targetType: TARGET_TYPES.SATELLITE,
+                noradId: createSelectedSatellite.norad_id,
+                groupId: selectedGroupId,
+            });
+            nextTransmitters = getTransmittersFromSatellite(createSelectedSatellite);
+            nextSatelliteId = createSelectedSatellite.norad_id;
+        } else if (createTargetType === TARGET_TYPES.MISSION) {
+            const missionCommand = String(createSelectedMission?.command || '').trim();
+            if (!missionCommand) {
+                toast.error('Please select a mission target first');
+                return;
+            }
+            payloadTarget = buildTargetTrackingPatch({
+                targetType: TARGET_TYPES.MISSION,
+                command: missionCommand,
+            });
+        } else {
+            const bodyId = String(createSelectedBodyId || '').trim().toLowerCase();
+            if (!bodyId) {
+                toast.error('Please select a body target first');
+                return;
+            }
+            payloadTarget = buildTargetTrackingPatch({
+                targetType: TARGET_TYPES.BODY,
+                bodyId,
+            });
+        }
+
+        const payload = {
+            tracker_id: trackerSlotId,
+            ...payloadTarget,
+            rig_id: normalizedRigId,
+            rotator_id: normalizedRotatorId,
+            transmitter_id: 'none',
+            rig_state: createTargetType === TARGET_TYPES.SATELLITE ? 'disconnected' : 'stopped',
+            rotator_state: 'disconnected',
+            rig_vfo: 'none',
+            vfo1: 'uplink',
+            vfo2: 'downlink',
+        };
+
+        try {
+            setCreateTargetBusy(true);
+            dispatch(setTrackerId(trackerSlotId));
+            dispatch(setSatelliteId(nextSatelliteId));
+            dispatch(setRotator({ value: normalizedRotatorId, trackerId: trackerSlotId }));
+            dispatch(setRadioRig({ value: normalizedRigId, trackerId: trackerSlotId }));
+            dispatch(setAvailableTransmitters(nextTransmitters));
+            await dispatch(setTrackingStateInBackend({ socket, data: payload })).unwrap();
+            setCreateDialogOpen(false);
+            resetCreateDialogState();
+        } catch (error) {
+            const errorMessage = emitTrackingErrorToast(
+                error,
+                'Failed to create target',
+                { suppressLimitToast: true },
+            );
+            setCreateDialogError(String(errorMessage || 'Failed to create target'));
+            setCreateTargetBusy(false);
+        }
+    }, [
+        buildTargetTrackingPatch,
+        createSelectedBodyId,
+        createSelectedMission,
+        createSelectedRigId,
+        createSelectedRotatorId,
+        createSelectedSatellite,
+        createTargetType,
+        dispatch,
+        emitTrackingErrorToast,
+        getTransmittersFromSatellite,
+        resetCreateDialogState,
+        socket,
+        targetTrackerInstances,
+        trackingState,
+    ]);
+
+    const handleRetargetSearchSelect = useCallback(async (targetOption) => {
+        const targetType = String(targetOption?.target_type || targetOption?.targetType || TARGET_TYPES.SATELLITE)
+            .trim()
+            .toLowerCase();
+
+        if (targetType === TARGET_TYPES.MISSION) {
+            const command = String(targetOption?.command || '').trim();
+            if (!command) {
+                return;
+            }
+            await handleRetargetTarget({
+                targetType: TARGET_TYPES.MISSION,
+                targetName: String(targetOption?.target_name || targetOption?.display_name || command).trim(),
+                command,
+            });
+            return;
+        }
+
+        if (targetType === TARGET_TYPES.BODY) {
+            const normalizedBodyId = String(targetOption?.body_id || targetOption?.bodyId || '').trim().toLowerCase();
+            if (!normalizedBodyId) {
+                return;
+            }
+            await handleRetargetTarget({
+                targetType: TARGET_TYPES.BODY,
+                targetName: String(targetOption?.target_name || targetOption?.name || normalizedBodyId).trim(),
+                bodyId: normalizedBodyId,
+            });
+            return;
+        }
+
+        const noradId = targetOption?.norad_id;
+        if (!noradId) {
+            return;
+        }
+        const selectedGroupId = targetOption?.groups?.[0]?.id || trackingState?.group_id || '';
+        await handleRetargetTarget({
+            targetType: TARGET_TYPES.SATELLITE,
+            targetName: String(targetOption?.target_name || targetOption?.name || noradId).trim(),
+            noradId,
+            groupId: selectedGroupId,
+            transmitters: getTransmittersFromSatellite(targetOption),
+        });
+    }, [getTransmittersFromSatellite, handleRetargetTarget, trackingState]);
 
     const targetOptions = useMemo(() => tabTrackerInstances.map((instance, index) => {
         const instanceTrackerId = instance?.tracker_id || '';
@@ -610,10 +860,17 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
         const isObservationTracker = parsedTargetNumber == null;
         const view = trackerViews?.[instanceTrackerId] || {};
         const effectiveTrackingState = view?.trackingState || instance?.tracking_state || {};
+        const targetType = normalizeTargetType(effectiveTrackingState);
         const rotatorData = view?.rotatorData || {};
         const rigData = view?.rigData || {};
-        const satName = view?.satelliteData?.details?.name || 'No satellite';
-        const satNorad = effectiveTrackingState?.norad_id || 'none';
+        const targetName = String(
+            view?.satelliteData?.details?.name
+            || effectiveTrackingState?.target_name
+            || effectiveTrackingState?.command
+            || effectiveTrackingState?.body_id
+            || 'No target'
+        );
+        const targetIdentifier = getTrackingTargetIdentifier(effectiveTrackingState) || 'none';
         const rotatorId = view?.selectedRotator || instance?.rotator_id || effectiveTrackingState?.rotator_id || 'none';
         const normalizedTabRotatorId = normalizeAssignedResourceId(rotatorId);
         const rigId = view?.selectedRadioRig || instance?.rig_id || effectiveTrackingState?.rig_id || 'none';
@@ -656,8 +913,9 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
             trackerId: instanceTrackerId,
             targetNumber,
             isObservationTracker,
-            satName,
-            satNorad,
+            targetType,
+            targetName,
+            targetIdentifier,
             rotatorId,
             rigId,
             rotatorName,
@@ -909,7 +1167,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                             Add New Target
                         </Typography>
                         <Typography variant="caption" color="text.secondary" sx={{ mt: 0.2 }}>
-                            Configure satellite and hardware in two quick steps
+                            Configure target and hardware in two quick steps
                         </Typography>
                     </Box>
                     <Chip
@@ -931,47 +1189,147 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                         }}
                     >
                         <Typography variant="overline" sx={{ fontWeight: 800, color: 'primary.main', letterSpacing: 0.4 }}>
-                            Step 1 · Satellite
+                            Step 1 · Target
                         </Typography>
                         <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
-                            Search and select the satellite target.
+                            Select target type and choose a target.
                         </Typography>
-                    <Autocomplete
-                        size="small"
-                        open={createSearchOpen}
-                        onOpen={() => setCreateSearchOpen(true)}
-                        onClose={() => setCreateSearchOpen(false)}
-                        options={createSearchOptions}
-                        loading={createSearchLoading}
-                        value={createSelectedSatellite}
-                        onInputChange={handleCreateSearchInputChange}
-                        onChange={(event, value) => {
-                            setCreateSelectedSatellite(value || null);
-                            if (createDialogError) {
-                                setCreateDialogError('');
-                            }
-                        }}
-                        isOptionEqualToValue={(option, value) => option?.norad_id === value?.norad_id}
-                        getOptionLabel={(option) => `${option?.norad_id || ''} - ${option?.name || ''}`}
-                        renderInput={(params) => (
-                            <TextField
-                                {...params}
-                                label="Satellite"
-                                placeholder="Search by name or NORAD ID"
-                                slotProps={{
-                                    input: {
-                                        ...params.InputProps,
-                                        endAdornment: (
-                                            <>
-                                                {createSearchLoading ? <CircularProgress color="inherit" size={18} /> : null}
-                                                {params.InputProps.endAdornment}
-                                            </>
-                                        ),
-                                    },
+                        <FormControl size="small" fullWidth sx={{ mb: 1 }}>
+                            <InputLabel id="create-target-type-label">Target Type</InputLabel>
+                            <Select
+                                labelId="create-target-type-label"
+                                value={createTargetType}
+                                label="Target Type"
+                                onChange={(event) => {
+                                    const nextType = String(event.target.value || TARGET_TYPES.SATELLITE);
+                                    setCreateTargetType(nextType);
+                                    setCreateDialogError('');
+                                    setCreateSelectedSatellite(null);
+                                    setCreateSelectedMission(null);
+                                    setCreateSelectedBodyId('');
+                                    if (nextType !== TARGET_TYPES.SATELLITE) {
+                                        setCreateSelectedRigId('none');
+                                    }
                                 }}
+                            >
+                                <MenuItem value={TARGET_TYPES.SATELLITE}>Satellite</MenuItem>
+                                <MenuItem value={TARGET_TYPES.MISSION}>Mission</MenuItem>
+                                <MenuItem value={TARGET_TYPES.BODY}>Body</MenuItem>
+                            </Select>
+                        </FormControl>
+                        {createTargetType === TARGET_TYPES.SATELLITE && (
+                            <Autocomplete
+                                size="small"
+                                open={createSearchOpen}
+                                onOpen={() => setCreateSearchOpen(true)}
+                                onClose={() => setCreateSearchOpen(false)}
+                                options={createSearchOptions}
+                                loading={createSearchLoading}
+                                value={createSelectedSatellite}
+                                onInputChange={handleCreateSearchInputChange}
+                                onChange={(event, value) => {
+                                    setCreateSelectedSatellite(value || null);
+                                    if (createDialogError) {
+                                        setCreateDialogError('');
+                                    }
+                                }}
+                                isOptionEqualToValue={(option, value) => option?.norad_id === value?.norad_id}
+                                getOptionLabel={(option) => `${option?.norad_id || ''} - ${option?.name || ''}`}
+                                renderInput={(params) => (
+                                    <TextField
+                                        {...params}
+                                        label="Satellite"
+                                        placeholder="Search by name or NORAD ID"
+                                        slotProps={{
+                                            input: {
+                                                ...params.InputProps,
+                                                endAdornment: (
+                                                    <>
+                                                        {createSearchLoading ? <CircularProgress color="inherit" size={18} /> : null}
+                                                        {params.InputProps.endAdornment}
+                                                    </>
+                                                ),
+                                            },
+                                        }}
+                                    />
+                                )}
                             />
                         )}
-                    />
+                        {createTargetType === TARGET_TYPES.MISSION && (
+                            <Autocomplete
+                                size="small"
+                                options={missionCatalogEntries}
+                                loading={catalogLoading}
+                                value={createSelectedMission}
+                                onChange={(event, value) => {
+                                    setCreateSelectedMission(value || null);
+                                    if (createDialogError) {
+                                        setCreateDialogError('');
+                                    }
+                                }}
+                                isOptionEqualToValue={(option, value) => option?.command === value?.command}
+                                getOptionLabel={(option) => option?.display_name || option?.command || ''}
+                                renderOption={(props, option) => (
+                                    <Box component="li" {...props} sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
+                                        <Typography variant="body2" noWrap>{option?.display_name || option?.command}</Typography>
+                                        <Chip
+                                            size="small"
+                                            label={option?.command || '-'}
+                                            variant="outlined"
+                                            sx={{ height: 18, fontSize: '0.62rem', fontFamily: 'monospace', flexShrink: 0 }}
+                                        />
+                                    </Box>
+                                )}
+                                renderInput={(params) => (
+                                    <TextField
+                                        {...params}
+                                        label="Mission"
+                                        placeholder="Select mission target"
+                                        helperText={catalogError || ''}
+                                        slotProps={{
+                                            input: {
+                                                ...params.InputProps,
+                                                endAdornment: (
+                                                    <>
+                                                        {catalogLoading ? <CircularProgress color="inherit" size={18} /> : null}
+                                                        {params.InputProps.endAdornment}
+                                                    </>
+                                                ),
+                                            },
+                                        }}
+                                    />
+                                )}
+                            />
+                        )}
+                        {createTargetType === TARGET_TYPES.BODY && (
+                            <FormControl size="small" fullWidth>
+                                <InputLabel id="create-target-body-label">Body</InputLabel>
+                                <Select
+                                    labelId="create-target-body-label"
+                                    value={createSelectedBodyId}
+                                    label="Body"
+                                    onChange={(event) => {
+                                        setCreateSelectedBodyId(String(event.target.value || '').toLowerCase());
+                                        if (createDialogError) {
+                                            setCreateDialogError('');
+                                        }
+                                    }}
+                                >
+                                    {bodyCatalogOptions.map((entry) => (
+                                        <MenuItem key={entry.body_id} value={entry.body_id}>
+                                            {entry.name}
+                                            {entry.body_type ? ` (${entry.body_type})` : ''}
+                                            {entry.parent_body_id ? ` · ${entry.parent_body_id}` : ''}
+                                        </MenuItem>
+                                    ))}
+                                </Select>
+                                {bodyCatalogError && (
+                                    <Typography variant="caption" color="error" sx={{ mt: 0.5 }}>
+                                        {bodyCatalogError}
+                                    </Typography>
+                                )}
+                            </FormControl>
+                        )}
                     </Box>
 
                     <Box
@@ -985,7 +1343,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                             Step 2 · Hardware (Optional)
                         </Typography>
                         <Typography variant="caption" sx={{ display: 'block', color: 'text.secondary', mb: 1 }}>
-                            Assign rotator and rig now, or leave as none.
+                            Assign hardware now, or leave as none.
                         </Typography>
 
                     <FormControl
@@ -1087,6 +1445,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                             labelId="create-target-rig-label"
                             value={createSelectedRigId}
                             label="Rig"
+                            disabled={createTargetType !== TARGET_TYPES.SATELLITE}
                             onChange={(event) => setCreateSelectedRigId(String(event.target.value))}
                             renderValue={(selected) => {
                                 if (String(selected) === 'none') return 'No rig control';
@@ -1163,6 +1522,11 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                             })}
                         </Select>
                     </FormControl>
+                        {createTargetType !== TARGET_TYPES.SATELLITE && (
+                            <Typography variant="caption" color="text.secondary">
+                                Mission and body targets are rotator-first. Rig controls stay idle.
+                            </Typography>
+                        )}
                     </Box>
 
                 </Box>
@@ -1206,7 +1570,14 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                 <Button
                     variant="contained"
                     color="success"
-                    disabled={createTargetBusy || !createSelectedSatellite?.norad_id}
+                    disabled={
+                        createTargetBusy
+                        || (
+                            (createTargetType === TARGET_TYPES.SATELLITE && !createSelectedSatellite?.norad_id)
+                            || (createTargetType === TARGET_TYPES.MISSION && !createSelectedMission?.command)
+                            || (createTargetType === TARGET_TYPES.BODY && !createSelectedBodyId)
+                        )
+                    }
                     onClick={handleCreateTargetSubmit}
                     startIcon={createTargetBusy ? <CircularProgress color="inherit" size={16} /> : <AddCircleIcon />}
                 >
@@ -1343,18 +1714,23 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                             }}
                         >
                             {targetOptions.map((option) => {
-                                const shortName = option.satName.length > 20
-                                    ? `${option.satName.slice(0, 20)}...`
-                                    : option.satName;
+                                const shortName = option.targetName.length > 20
+                                    ? `${option.targetName.slice(0, 20)}...`
+                                    : option.targetName;
                                 const trackerLabel = option.isObservationTracker
                                     ? 'OBS'
                                     : `T${option.targetNumber}`;
+                                const targetIdTooltip = option.targetType === TARGET_TYPES.SATELLITE
+                                    ? `NORAD ${option.targetIdentifier}`
+                                    : (option.targetType === TARGET_TYPES.MISSION
+                                        ? `Mission ${option.targetIdentifier}`
+                                        : `Body ${option.targetIdentifier}`);
                                 const tooltipLines = [
                                     option.isObservationTracker
                                         ? `Observation tracker (${option.trackerId})`
                                         : `Target ${option.targetNumber}`,
-                                    `${option.satName}`,
-                                    `NORAD ${option.satNorad}`,
+                                    `${option.targetName}`,
+                                    targetIdTooltip,
                                     `Rotator ${option.rotatorName}`,
                                     `HW ${option.tabHardwareLed?.label || 'Unknown'}`,
                                 ];
@@ -1424,7 +1800,7 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                                                     <IconButton
                                                         component="span"
                                                         size="small"
-                                                        aria-label={`Delete ${option.satName} target`}
+                                                        aria-label={`Delete ${option.targetName} target`}
                                                         onMouseDown={(event) => {
                                                             event.preventDefault();
                                                             event.stopPropagation();
@@ -1494,9 +1870,10 @@ const TargetSatelliteSelectorBar = React.memo(function TargetSatelliteSelectorBa
                 }}
             >
                 <SatelliteSearchAutocomplete
-                    key={searchResetKey}
-                    onSatelliteSelect={handleRetargetSatelliteSelect}
+                    onTargetSelect={handleRetargetSearchSelect}
                     disabled={disableRetargetSearch}
+                    monitoredMissionCommands={monitoredMissionCommands}
+                    monitoredBodyIds={monitoredBodyIds}
                 />
             </Box>
         </Box>

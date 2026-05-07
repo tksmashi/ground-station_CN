@@ -49,6 +49,14 @@ import {
 import {calculateElevationCurvesForPasses} from '../../utils/elevation-curve-calculator.js';
 import TargetPassesTableSettingsDialog from './target-passes-table-settings-dialog.jsx';
 import { useUserTimeSettings } from '../../hooks/useUserTimeSettings.jsx';
+import CelestialPasses from '../celestial/celestial-passes.jsx';
+import { fetchCelestialTracks, fetchSolarSystemScene } from '../celestial/celestial-slice.jsx';
+import {
+    buildTargetCelestialPayload,
+    buildTargetKeyFromTrackingState,
+    filterPassesForTargetWindow,
+    normalizeTargetType,
+} from './celestial-target-utils.js';
 
 const getPassStatus = (row, now = new Date()) => {
     const startDate = new Date(row?.event_start);
@@ -508,6 +516,9 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
     const dispatch = useDispatch();
     const { t } = useTranslation('target');
     const trackerInstances = useSelector((state) => state.trackerInstances?.instances || []);
+    const trackingState = useSelector((state) => state.targetSatTrack?.trackingState || {});
+    const satelliteDetails = useSelector((state) => state.targetSatTrack?.satelliteData?.details || {});
+    const celestialState = useSelector((state) => state.celestial || {});
     const [containerHeight, setContainerHeight] = useState(0);
     const containerRef = useRef(null);
     const {
@@ -524,15 +535,53 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
     } = useSelector(state => state.targetSatTrack);
     const hasTargets = trackerInstances.length > 0;
     const { location } = useSelector(state => state.location);
+    const targetType = normalizeTargetType(trackingState);
+    const isSatelliteTarget = targetType === 'satellite';
+    const targetKey = useMemo(
+        () => buildTargetKeyFromTrackingState(trackingState),
+        [trackingState],
+    );
+    const nonSatelliteTargetName = useMemo(() => {
+        const detailsName = String(satelliteDetails?.name || '').trim();
+        if (detailsName) return detailsName;
+        if (targetType === 'mission') return String(trackingState?.command || '').trim();
+        if (targetType === 'body') return String(trackingState?.body_id || '').trim().toLowerCase();
+        return '';
+    }, [satelliteDetails?.name, targetType, trackingState?.body_id, trackingState?.command]);
     const minHeight = 200;
     const maxHeight = 400;
     const hasLoadedFromStorageRef = useRef(false);
     const isLoadingRef = useRef(false);
     const [quickFilterPreset, setQuickFilterPreset] = useState('all');
     const [filterNowMs, setFilterNowMs] = useState(() => Date.now());
+    const nonSatellitePayload = useMemo(
+        () => buildTargetCelestialPayload({
+            trackingState,
+            targetName: nonSatelliteTargetName,
+            nextPassesHours,
+        }),
+        [nextPassesHours, nonSatelliteTargetName, trackingState],
+    );
+    const nonSatellitePasses = useMemo(
+        () => filterPassesForTargetWindow({
+            passes: celestialState?.celestialTracks?.celestial_passes || [],
+            targetKey,
+            nextPassesHours,
+            nowMs: filterNowMs,
+        }),
+        [celestialState?.celestialTracks?.celestial_passes, filterNowMs, nextPassesHours, targetKey],
+    );
+    const nonSatelliteTracks = useMemo(() => {
+        const rows = Array.isArray(celestialState?.celestialTracks?.celestial)
+            ? celestialState.celestialTracks.celestial
+            : [];
+        if (!targetKey) return [];
+        return rows.filter((row) => String(row?.target_key || '').trim() === targetKey);
+    }, [celestialState?.celestialTracks?.celestial, targetKey]);
 
     // Load column visibility from localStorage on mount
     useEffect(() => {
+        if (!isSatelliteTarget) return;
         // Prevent double loading (React StrictMode or component remounting)
         if (isLoadingRef.current || hasLoadedFromStorageRef.current) {
             return;
@@ -555,10 +604,11 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
             }
         };
         loadColumnVisibility();
-    }, []);
+    }, [dispatch, isSatelliteTarget]);
 
     // Persist column visibility to localStorage whenever it changes (but not on initial load)
     useEffect(() => {
+        if (!isSatelliteTarget) return;
         if (passesTableColumnVisibility && hasLoadedFromStorageRef.current) {
             try {
                 localStorage.setItem('target-passes-table-column-visibility', JSON.stringify(passesTableColumnVisibility));
@@ -566,7 +616,7 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
                 console.error('Failed to save target passes table column visibility:', e);
             }
         }
-    }, [passesTableColumnVisibility]);
+    }, [passesTableColumnVisibility, isSatelliteTarget]);
 
     useEffect(() => {
         const intervalId = setInterval(() => {
@@ -576,18 +626,26 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
     }, []);
 
     const handleRefreshPasses = () => {
-        if (satelliteId) {
+        if (isSatelliteTarget && satelliteId) {
             dispatch(fetchNextPasses({
                 socket,
                 noradId: satelliteId,
                 hours: nextPassesHours,
                 forceRecalculate: true
             }));
+            return;
+        }
+        if (!isSatelliteTarget && nonSatellitePayload) {
+            Promise.all([
+                dispatch(fetchSolarSystemScene({ socket, payload: nonSatellitePayload })),
+                dispatch(fetchCelestialTracks({ socket, payload: nonSatellitePayload })),
+            ]);
         }
     };
 
     // Calculate elevation curves when passes are received or satellite changes
     useEffect(() => {
+        if (!isSatelliteTarget) return;
         // Check if location is valid (not null)
         const isLocationValid = location && location.lat != null && location.lon != null;
 
@@ -616,7 +674,7 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
                 }, 0);
             }
         }
-    }, [satellitePasses, location, satelliteData, satelliteId, dispatch]);
+    }, [satellitePasses, location, satelliteData, satelliteId, dispatch, isSatelliteTarget]);
 
     useEffect(() => {
         const target = containerRef.current;
@@ -687,6 +745,7 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
     }, [dispatch, applyDefaultSort]);
 
     useEffect(() => {
+        if (!isSatelliteTarget) return undefined;
         const handleKeyboardShortcuts = (event) => {
             if (!event.altKey) return;
             if (event.key === '1') handleQuickPreset('all');
@@ -698,7 +757,20 @@ const NextPassesIsland = React.memo(function NextPassesIsland() {
         };
         window.addEventListener('keydown', handleKeyboardShortcuts);
         return () => window.removeEventListener('keydown', handleKeyboardShortcuts);
-    }, [handleQuickPreset]);
+    }, [handleQuickPreset, isSatelliteTarget]);
+
+    if (!isSatelliteTarget) {
+        return (
+            <CelestialPasses
+                passes={nonSatellitePasses}
+                tracks={nonSatelliteTracks}
+                loading={Boolean(celestialState?.tracksLoading)}
+                gridEditable={gridEditable}
+                onRefresh={handleRefreshPasses}
+                refreshDisabled={!socket || !nonSatellitePayload || Boolean(celestialState?.tracksLoading)}
+            />
+        );
+    }
 
     return (
         <>

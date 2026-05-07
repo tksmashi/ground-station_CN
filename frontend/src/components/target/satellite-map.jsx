@@ -36,6 +36,7 @@ import HomeIcon from '@mui/icons-material/Home';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FilterCenterFocusIcon from '@mui/icons-material/FilterCenterFocus';
 import SettingsIcon from '@mui/icons-material/Settings';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import {useDispatch, useSelector} from "react-redux";
 import { useTranslation } from 'react-i18next';
 import {
@@ -77,15 +78,27 @@ import MapSettingsIslandDialog from './map-settings-dialog.jsx';
 import CoordinateGrid from "../common/mercator-grid.jsx";
 import createTerminatorLine from "../common/terminator-line.jsx";
 import {getSunMoonCoords} from "../common/sunmoon.jsx";
+import SolarSystemCanvas from "../celestial/solarsystem-canvas.jsx";
+import { fetchCelestialTracks, fetchSolarSystemScene } from "../celestial/celestial-slice.jsx";
 import {
     satelliteCoverageSelector,
     satelliteDetailsSelector,
     satellitePathsSelector,
     satellitePositionSelector,
+    targetIdentifierSelector,
+    targetTypeSelector,
+    trackingStateSelector,
     satelliteTrackingStateSelector,
     satelliteTransmittersSelector,
 } from "./state-selectors.jsx";
 import {useSocket} from "../common/socket.jsx";
+import {
+    buildTargetCelestialPayload,
+    buildTargetKeyFromTrackingState,
+    clampTargetPassHours,
+    filterPassesForTargetWindow,
+    normalizeTargetType,
+} from './celestial-target-utils.js';
 
 const storageMapZoomValueKey = "target-map-zoom-level";
 const TARGET_SLOT_ID_PATTERN = /^target-(\d+)$/;
@@ -300,6 +313,7 @@ const TargetSatelliteMapContainer = ({}) => {
         orbitProjectionDuration,
         tileLayerID,
         mapZoomLevel,
+        nextPassesHours,
         sunPos,
         moonPos,
         gridEditable,
@@ -335,10 +349,45 @@ const TargetSatelliteMapContainer = ({}) => {
     const satellitePosition = useSelector(satellitePositionSelector);
     const satelliteCoverage = useSelector(satelliteCoverageSelector);
     const satelliteDetails = useSelector(satelliteDetailsSelector);
+    const trackingState = useSelector(trackingStateSelector);
+    const targetType = useSelector(targetTypeSelector);
+    const targetIdentifier = useSelector(targetIdentifierSelector);
     const satelliteTrackingState = useSelector(satelliteTrackingStateSelector);
     const satellitePaths = useSelector(satellitePathsSelector);
     const satelliteTransmitters = useSelector(satelliteTransmittersSelector);
+    const celestialState = useSelector((state) => state.celestial || {});
     const {location} = useSelector(state => state.location);
+    const isSatelliteTarget = targetType === 'satellite';
+    const missionCommand = String(trackingState?.command || '').trim();
+    const bodyId = String(trackingState?.body_id || '').trim().toLowerCase();
+    const nonSatelliteTargetKey = useMemo(
+        () => buildTargetKeyFromTrackingState(trackingState),
+        [trackingState],
+    );
+    const nonSatelliteTargetName = useMemo(() => {
+        const detailsName = String(satelliteDetails?.name || '').trim();
+        if (detailsName) return detailsName;
+        const fallback = targetType === 'mission'
+            ? String(trackingState?.command || '').trim()
+            : String(trackingState?.body_id || '').trim().toLowerCase();
+        return fallback || String(targetIdentifier || '').trim();
+    }, [satelliteDetails?.name, targetIdentifier, targetType, trackingState?.command, trackingState?.body_id]);
+    const nonSatellitePayload = useMemo(
+        () => buildTargetCelestialPayload({
+            // Keep payload dependencies scoped to stable target identity fields.
+            trackingState: {
+                target_type: normalizeTargetType({ target_type: targetType, command: missionCommand, body_id: bodyId }),
+                command: missionCommand,
+                body_id: bodyId,
+            },
+            targetName: nonSatelliteTargetName,
+            nextPassesHours,
+        }),
+        [bodyId, missionCommand, nextPassesHours, nonSatelliteTargetName, targetType],
+    );
+    const [focusTargetSignal, setFocusTargetSignal] = useState(0);
+    const lastAutoFetchedSignatureRef = useRef('');
+    const pendingFocusTargetKeyRef = useRef('');
     const [currentPastSatellitesPaths, setCurrentPastSatellitesPaths] = useState([]);
     const [currentFutureSatellitesPaths, setCurrentFutureSatellitesPaths] = useState([]);
     const [currentSatellitesPosition, setCurrentSatellitesPosition] = useState([]);
@@ -354,6 +403,43 @@ const TargetSatelliteMapContainer = ({}) => {
     const handleSetMapZoomLevel = useCallback((zoomLevel) => {
         dispatch(setMapZoomLevel(zoomLevel));
     }, [dispatch]);
+    const handleRefreshNonSatelliteScene = useCallback(async () => {
+        if (!socket || !nonSatellitePayload) return;
+        await Promise.all([
+            dispatch(fetchSolarSystemScene({ socket, payload: nonSatellitePayload })),
+            dispatch(fetchCelestialTracks({ socket, payload: nonSatellitePayload })),
+        ]);
+    }, [dispatch, nonSatellitePayload, socket]);
+
+    const nonSatelliteFetchSignature = useMemo(() => {
+        if (isSatelliteTarget || !nonSatellitePayload) return '';
+        const futureHours = clampTargetPassHours(nextPassesHours);
+        return `${targetType}:${targetIdentifier}:${futureHours}`;
+    }, [isSatelliteTarget, nextPassesHours, nonSatellitePayload, targetIdentifier, targetType]);
+
+    useEffect(() => {
+        if (!nonSatelliteFetchSignature || isSatelliteTarget || !nonSatellitePayload) {
+            return;
+        }
+        // Tracker state updates arrive frequently. Fetch celestial tracks only when target identity/window changes.
+        if (lastAutoFetchedSignatureRef.current === nonSatelliteFetchSignature) {
+            return;
+        }
+        lastAutoFetchedSignatureRef.current = nonSatelliteFetchSignature;
+        handleRefreshNonSatelliteScene();
+    }, [
+        handleRefreshNonSatelliteScene,
+        isSatelliteTarget,
+        nonSatelliteFetchSignature,
+        nonSatellitePayload,
+    ]);
+
+    useEffect(() => {
+        if (!isSatelliteTarget && nonSatelliteTargetKey) {
+            pendingFocusTargetKeyRef.current = nonSatelliteTargetKey;
+            setFocusTargetSignal((value) => value + 1);
+        }
+    }, [isSatelliteTarget, nonSatelliteTargetKey]);
 
     // Subscribe to map events
     function MapEventComponent({handleSetMapZoomLevel}) {
@@ -368,6 +454,10 @@ const TargetSatelliteMapContainer = ({}) => {
     }
 
     useEffect(() => {
+        if (!isSatelliteTarget) {
+            clearRenderedSatelliteLayers();
+            return;
+        }
         satelliteUpdate(new Date());
 
         return () => {
@@ -376,16 +466,24 @@ const TargetSatelliteMapContainer = ({}) => {
     }, [satelliteDetails, satellitePosition, satellitePaths, satelliteCoverage, sliderTimeOffset, showTooltip,
         orbitProjectionDuration, tileLayerID, showPastOrbitPath, showFutureOrbitPath, showSatelliteCoverage,
         showSunIcon, showMoonIcon, showTerminatorLine, pastOrbitLineColor, futureOrbitLineColor,
-        satelliteCoverageColor]);
+        satelliteCoverageColor, isSatelliteTarget, clearRenderedSatelliteLayers]);
 
     useEffect(() => {
+        if (!isSatelliteTarget) {
+            clearRenderedSatelliteLayers();
+            return;
+        }
         if (trackerInstances.length > 0 && noradId) {
             return;
         }
         clearRenderedSatelliteLayers();
-    }, [trackerInstances.length, noradId, clearRenderedSatelliteLayers]);
+    }, [trackerInstances.length, noradId, clearRenderedSatelliteLayers, isSatelliteTarget]);
 
     const satelliteUpdate = function (now) {
+        if (!isSatelliteTarget) {
+            clearRenderedSatelliteLayers();
+            return;
+        }
         if (trackerInstances.length === 0 || !noradId) {
             clearRenderedSatelliteLayers();
             return;
@@ -574,6 +672,7 @@ const TargetSatelliteMapContainer = ({}) => {
     // Keep target map focused on the selected satellite.
     // If coverage is shown, auto-fit to coverage bounds (legacy behavior).
     useEffect(() => {
+        if (!isSatelliteTarget) return;
         if (!MapObject) return;
 
         const selectedNoradId = String(noradId ?? '');
@@ -601,6 +700,7 @@ const TargetSatelliteMapContainer = ({}) => {
 
         MapObject.setView([lat, lon], MapObject.getZoom(), { animate: false });
     }, [
+        isSatelliteTarget,
         noradId,
         satelliteDetails?.norad_id,
         satellitePosition?.lat,
@@ -610,6 +710,7 @@ const TargetSatelliteMapContainer = ({}) => {
     ]);
 
     useEffect(() => {
+        if (!isSatelliteTarget) return;
         const intervalId = setInterval(() => {
             if (MapObject) {
                 MapObject.invalidateSize();
@@ -619,9 +720,10 @@ const TargetSatelliteMapContainer = ({}) => {
         return () => {
             clearInterval(intervalId);
         };
-    }, []);
+    }, [isSatelliteTarget]);
 
     useEffect(() => {
+        if (!isSatelliteTarget) return;
         // zoom in and out a bit to fix the zoom factor issue
         if (MapObject && MapObject._container && document.contains(MapObject._container)) {
             const zoomLevel = MapObject.getZoom();
@@ -636,9 +738,10 @@ const TargetSatelliteMapContainer = ({}) => {
         return () => {
 
         };
-    }, [tileLayerID]);
+    }, [tileLayerID, isSatelliteTarget]);
 
     useEffect(() => {
+        if (!isSatelliteTarget) return;
         if (noradId) {
             dispatch(fetchSatellite({socket, noradId: noradId}));
         }
@@ -646,11 +749,122 @@ const TargetSatelliteMapContainer = ({}) => {
         return () => {
 
         };
-    }, [noradId]);
+    }, [noradId, isSatelliteTarget]);
+
+    const nonSatelliteScene = useMemo(() => {
+        const solarScene = celestialState?.solarScene || {};
+        const tracksScene = celestialState?.celestialTracks || {};
+        const rawCelestialRows = Array.isArray(tracksScene?.celestial) ? tracksScene.celestial : [];
+        const rawPasses = Array.isArray(tracksScene?.celestial_passes) ? tracksScene.celestial_passes : [];
+        const scopedRows = nonSatelliteTargetKey
+            ? rawCelestialRows.filter((row) => String(row?.target_key || '').trim() === nonSatelliteTargetKey)
+            : [];
+        const scopedPasses = filterPassesForTargetWindow({
+            passes: rawPasses,
+            targetKey: nonSatelliteTargetKey,
+            nextPassesHours: clampTargetPassHours(nextPassesHours),
+        });
+
+        return {
+            ...solarScene,
+            ...tracksScene,
+            planets: Array.isArray(solarScene?.planets) ? solarScene.planets : [],
+            celestial: scopedRows,
+            celestial_passes: scopedPasses,
+        };
+    }, [celestialState?.celestialTracks, celestialState?.solarScene, nonSatelliteTargetKey, nextPassesHours]);
+    const nonSatelliteHasFocusedTargetRow = useMemo(() => {
+        if (!nonSatelliteTargetKey) return false;
+        const scopedRows = Array.isArray(nonSatelliteScene?.celestial) ? nonSatelliteScene.celestial : [];
+        return scopedRows.some((row) => String(row?.target_key || '').trim() === nonSatelliteTargetKey);
+    }, [nonSatelliteScene?.celestial, nonSatelliteTargetKey]);
+
+    useEffect(() => {
+        if (isSatelliteTarget) return;
+        if (!nonSatelliteTargetKey) return;
+        if (!nonSatelliteHasFocusedTargetRow) return;
+        // If focus was requested before tracks loaded, retry focus once rows for that key are available.
+        if (pendingFocusTargetKeyRef.current !== nonSatelliteTargetKey) return;
+        pendingFocusTargetKeyRef.current = '';
+        setFocusTargetSignal((value) => value + 1);
+    }, [isSatelliteTarget, nonSatelliteHasFocusedTargetRow, nonSatelliteTargetKey]);
 
     const handleOpenSettings = useCallback(() => {
         dispatch(setOpenMapSettingsDialog(true));
     }, [dispatch]);
+
+    if (!isSatelliteTarget) {
+        const scopedTargetRows = Array.isArray(nonSatelliteScene?.celestial) ? nonSatelliteScene.celestial : [];
+        const hasTargetData = scopedTargetRows.length > 0;
+        const nonSatelliteTitle = targetType === 'mission' ? 'Target Map · Mission' : 'Target Map · Body';
+
+        return (
+            <>
+                <TitleBar
+                    className={getClassNamesBasedOnGridEditing(gridEditable, ["window-title-bar"])}
+                    sx={{
+                        bgcolor: 'background.titleBar',
+                        borderBottom: '1px solid',
+                        borderColor: 'border.main',
+                        backdropFilter: 'blur(10px)',
+                    }}
+                >
+                    <Box sx={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%'}}>
+                        <Box sx={{display: 'flex', alignItems: 'center', minWidth: 0, gap: 0.75}}>
+                            <Typography variant="subtitle2" sx={{fontWeight: 'bold'}} noWrap>
+                                {nonSatelliteTitle}
+                            </Typography>
+                            <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+                                {nonSatelliteTargetName || '-'}
+                            </Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', gap: 0.5 }}>
+                            <Tooltip title="Refresh target scene">
+                                <span>
+                                    <IconButton
+                                        size="small"
+                                        onClick={handleRefreshNonSatelliteScene}
+                                        disabled={!socket || !nonSatellitePayload || celestialState?.tracksLoading}
+                                        sx={{ padding: '2px' }}
+                                    >
+                                        <RefreshIcon fontSize="small" />
+                                    </IconButton>
+                                </span>
+                            </Tooltip>
+                        </Box>
+                    </Box>
+                </TitleBar>
+                <Box sx={{ width: '100%', height: 'calc(100% - 30px)' }}>
+                    {!nonSatellitePayload ? (
+                        <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', p: 2 }}>
+                            <Typography variant="body2" sx={{ color: 'text.secondary', textAlign: 'center' }}>
+                                Select a mission/body target to render the solar-system viewport.
+                            </Typography>
+                        </Box>
+                    ) : (
+                        <Box sx={{ height: '100%', minHeight: 220 }}>
+                            {!hasTargetData && celestialState?.tracksLoading ? (
+                                <Box sx={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', p: 2 }}>
+                                    <Typography variant="body2" sx={{ color: 'text.secondary', textAlign: 'center' }}>
+                                        Loading target scene...
+                                    </Typography>
+                                </Box>
+                            ) : (
+                                <SolarSystemCanvas
+                                    scene={nonSatelliteScene}
+                                    selectedTargetKeys={nonSatelliteTargetKey ? [nonSatelliteTargetKey] : []}
+                                    focusTargetSignal={focusTargetSignal}
+                                    focusTargetKey={nonSatelliteTargetKey}
+                                    instantFocus={true}
+                                    initialViewport={celestialState?.mapSettings?.solarSystemViewport || null}
+                                />
+                            )}
+                        </Box>
+                    )}
+                </Box>
+            </>
+        );
+    }
 
     return (
         <>

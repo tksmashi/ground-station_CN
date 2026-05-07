@@ -64,6 +64,8 @@ import TransmittersDialog from "../satellites/transmitters-dialog.jsx";
 import SatelliteEditDialog from "../satellites/satellite-edit-dialog.jsx";
 import {fetchSatellite} from "./target-slice.jsx";
 import {useSocket} from "../common/socket.jsx";
+import { targetIdentifierSelector, targetTypeSelector, trackingStateSelector } from "./state-selectors.jsx";
+import { normalizeTargetType as normalizeTrackingTargetType } from './celestial-target-utils.js';
 // ElevationDisplay not used in target page; using satelliteData for elevation per request
 
 const TargetSatelliteInfoIsland = () => {
@@ -72,6 +74,9 @@ const TargetSatelliteInfoIsland = () => {
     const dispatch = useDispatch();
     const { socket } = useSocket();
     const { satelliteData, gridEditable, satelliteId, satellitePasses } = useSelector((state) => state.targetSatTrack);
+    const targetType = useSelector(targetTypeSelector);
+    const targetIdentifier = useSelector(targetIdentifierSelector);
+    const trackingState = useSelector(trackingStateSelector);
     const trackerInstances = useSelector((state) => state.trackerInstances?.instances || []);
     const selectedSatellitePositions = useSelector(state => state.overviewSatTrack.selectedSatellitePositions);
     const navigate = useNavigate();
@@ -82,6 +87,7 @@ const TargetSatelliteInfoIsland = () => {
     const selectedNoradId = satelliteData?.details?.norad_id || satelliteId || null;
     const selectedSatelliteName = satelliteData?.details?.name || '';
     const hasTargets = trackerInstances.length > 0;
+    const isSatelliteTarget = targetType === 'satellite';
     const hasSatelliteSelection = Boolean(selectedNoradId);
     const hasOperator = Boolean(
         satelliteData
@@ -95,6 +101,20 @@ const TargetSatelliteInfoIsland = () => {
         name: selectedSatelliteName,
         transmitters,
     };
+    const detailsTargetType = normalizeTrackingTargetType(satelliteData?.details || {});
+    // Mission/body retargets can temporarily show old satellite telemetry until worker updates arrive.
+    const hasCurrentNonSatelliteTelemetry = !isSatelliteTarget && detailsTargetType === targetType;
+    const nonSatelliteTargetName = String(
+        (hasCurrentNonSatelliteTelemetry ? satelliteData?.details?.name : '')
+        || (targetType === 'mission'
+            ? trackingState?.command
+            : trackingState?.body_id)
+        || targetIdentifier
+        || ''
+    ).trim();
+    const nonSatelliteAzimuth = hasCurrentNonSatelliteTelemetry ? Number(satelliteData?.position?.az) : NaN;
+    const nonSatelliteElevation = hasCurrentNonSatelliteTelemetry ? Number(satelliteData?.position?.el) : NaN;
+    const formatAngle = (value) => (Number.isFinite(value) ? `${value.toFixed(1)}°` : '--');
 
     const passInfo = React.useMemo(() => {
         if (!selectedNoradId || !Array.isArray(satellitePasses) || satellitePasses.length === 0) {
@@ -283,17 +303,21 @@ const TargetSatelliteInfoIsland = () => {
                 <Box sx={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%'}}>
                     <Box sx={{display: 'flex', alignItems: 'center'}}>
                         <Typography variant="subtitle2" sx={{fontWeight: 'bold'}}>
-                            {t('satellite_info.title')}
+                            {isSatelliteTarget ? t('satellite_info.title') : 'Target Info'}
                         </Typography>
                     </Box>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                         <Typography variant="caption" sx={{color: 'text.secondary'}}>
-                            ID: {satelliteData && satelliteData['details'] ? satelliteData['details']['norad_id'] : ''}
+                            {isSatelliteTarget
+                                ? `ID: ${satelliteData && satelliteData['details'] ? satelliteData['details']['norad_id'] : ''}`
+                                : `Type: ${targetType}`}
                         </Typography>
                     </Box>
                 </Box>
             </TitleBar>
 
+            {isSatelliteTarget ? (
+                <>
             {!hasSatelliteSelection && (
                 <Box
                     sx={{
@@ -963,6 +987,57 @@ const TargetSatelliteInfoIsland = () => {
                 widthOffsetPx={20}
             />
             </>
+            )}
+                </>
+            ) : (
+                <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', p: 1.5 }}>
+                    <Box sx={{ mb: 1.5, p: 1.25, bgcolor: 'overlay.light', borderRadius: 1 }}>
+                        <Typography variant="subtitle1" sx={{ fontWeight: 700, lineHeight: 1.2 }} noWrap>
+                            {nonSatelliteTargetName || '-'}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: 'text.secondary' }} noWrap>
+                            {targetType === 'mission' ? 'Mission' : 'Body'} · {targetIdentifier || '-'}
+                        </Typography>
+                        <Box sx={{ mt: 1, display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+                            <Chip size="small" color="info" label={`Rotator: ${trackingState?.rotator_state || '-'}`} />
+                            <Chip size="small" variant="outlined" label={`Rig: ${trackingState?.rig_state || '-'}`} />
+                            <Chip
+                                size="small"
+                                color={Number.isFinite(nonSatelliteElevation) ? (nonSatelliteElevation > 0 ? 'success' : 'default') : 'default'}
+                                label={Number.isFinite(nonSatelliteElevation)
+                                    ? (nonSatelliteElevation > 0 ? 'Above Horizon' : 'Below Horizon')
+                                    : 'Visibility Unknown'}
+                            />
+                        </Box>
+                    </Box>
+
+                    {!hasCurrentNonSatelliteTelemetry ? (
+                        <Typography variant="caption" sx={{ color: 'warning.main', display: 'block', mb: 1.25 }}>
+                            Waiting for updated mission/body telemetry.
+                        </Typography>
+                    ) : null}
+
+                    <Grid container spacing={1}>
+                        <Grid size={6}>
+                            <DataPoint icon={ExploreIcon} label="Target Azimuth" value={formatAngle(nonSatelliteAzimuth)} emphasis />
+                        </Grid>
+                        <Grid size={6}>
+                            <DataPoint icon={TrackChangesIcon} label="Target Elevation" value={formatAngle(nonSatelliteElevation)} emphasis />
+                        </Grid>
+                        <Grid size={6}>
+                            <DataPoint icon={InfoOutlinedIcon} label="Mission Command" value={targetType === 'mission' ? (trackingState?.command || '-') : '-'} />
+                        </Grid>
+                        <Grid size={6}>
+                            <DataPoint icon={InfoOutlinedIcon} label="Body ID" value={targetType === 'body' ? (trackingState?.body_id || '-') : '-'} />
+                        </Grid>
+                        <Grid size={6}>
+                            <DataPoint icon={MyLocationIcon} label="Rotator" value={String(trackingState?.rotator_id || '-')} />
+                        </Grid>
+                        <Grid size={6}>
+                            <DataPoint icon={RadioIcon} label="Rig" value={String(trackingState?.rig_id || '-')} />
+                        </Grid>
+                    </Grid>
+                </Box>
             )}
         </Box>
     );

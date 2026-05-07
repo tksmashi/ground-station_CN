@@ -244,6 +244,7 @@ const SolarSystemCanvas = ({
     fitAllSignal = 0,
     focusTargetSignal = 0,
     focusTargetKey = '',
+    instantFocus = false,
     zoomInSignal = 0,
     zoomOutSignal = 0,
     resetZoomSignal = 0,
@@ -458,8 +459,15 @@ const SolarSystemCanvas = ({
             panX: -worldCenterX * nextZoom,
             panY: worldCenterY * nextZoom,
         };
+        if (instantFocus) {
+            cancelViewportAnimation();
+            viewportRef.current = nextViewport;
+            setViewport(nextViewport);
+            commitViewport(nextViewport);
+            return;
+        }
         animateViewportTo(nextViewport, FOCUS_ANIMATION_DURATION_MS);
-    }, [tracked, animateViewportTo]);
+    }, [tracked, animateViewportTo, cancelViewportAnimation, commitViewport, instantFocus]);
 
     const applyZoomAtScreenPoint = useCallback((zoomFactor, anchorX, anchorY) => {
         const container = containerRef.current;
