@@ -906,7 +906,11 @@ export default function Layout() {
         if (segment === '' && currentPath === '') return true;
         if (
             segment === 'settings/settings' &&
-            (currentPath.startsWith('settings/settings') || currentPath.startsWith('settings/preferences'))
+            (
+                currentPath.startsWith('settings/settings')
+                || currentPath.startsWith('settings/preferences')
+                || currentPath.startsWith('settings/integrations')
+            )
         ) {
             return true;
         }

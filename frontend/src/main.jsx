@@ -27,6 +27,7 @@ import {
     SettingsTabRotator,
     SettingsTabSettings,
     SettingsTabPreferences,
+    SettingsTabIntegrations,
     SettingsTabSatellites,
     SettingsTabMaintenance,
     SettingsTabRig,
@@ -124,6 +125,10 @@ const router = createBrowserRouter([
                             {
                                 path: "preferences",
                                 Component: SettingsTabPreferences,
+                            },
+                            {
+                                path: "integrations",
+                                Component: SettingsTabIntegrations,
                             },
                             {
                                 path: "location",

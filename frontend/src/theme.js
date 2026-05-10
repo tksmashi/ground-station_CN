@@ -292,7 +292,10 @@ export function setupTheme(themeName = 'dark') {
             MuiTextField: {
                 styleOverrides: {
                     root: ({ theme }) => ({
-                        backgroundColor: theme.palette.background.paper,
+                        backgroundColor: 'transparent',
+                        '& .MuiInputBase-root': {
+                            backgroundColor: theme.palette.background.paper,
+                        },
                     }),
                 },
             },

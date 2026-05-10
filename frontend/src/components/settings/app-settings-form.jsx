@@ -57,11 +57,82 @@ const SOURCE_LABELS = {
     default: 'Default',
 };
 
+const SETTINGS_GROUP_DEFS = [
+    {
+        key: 'network',
+        titleKey: 'app_settings.group_network',
+        titleDefault: 'Network',
+        descriptionKey: 'app_settings.group_network_help',
+        descriptionDefault: 'Backend host and listener port configuration.',
+        fieldKeys: ['host', 'port'],
+    },
+    {
+        key: 'storage',
+        titleKey: 'app_settings.group_storage',
+        titleDefault: 'Storage',
+        descriptionKey: 'app_settings.group_storage_help',
+        descriptionDefault: 'Database path and persistence mode.',
+        fieldKeys: ['db', 'temp_db'],
+    },
+    {
+        key: 'logging',
+        titleKey: 'app_settings.group_logging',
+        titleDefault: 'Logging',
+        descriptionKey: 'app_settings.group_logging_help',
+        descriptionDefault: 'Log level and logging configuration path.',
+        fieldKeys: ['log_level', 'log_config'],
+    },
+    {
+        key: 'security',
+        titleKey: 'app_settings.group_security',
+        titleDefault: 'Security',
+        descriptionKey: 'app_settings.group_security_help',
+        descriptionDefault: 'Sensitive keys and authentication-related settings.',
+        fieldKeys: ['secret_key'],
+    },
+    {
+        key: 'tracking',
+        titleKey: 'app_settings.group_tracking',
+        titleDefault: 'Tracking',
+        descriptionKey: 'app_settings.group_tracking_help',
+        descriptionDefault: 'Tracker cadence and target slot limits.',
+        fieldKeys: ['track_interval_ms', 'max_tracker_targets'],
+    },
+    {
+        key: 'discovery',
+        titleKey: 'app_settings.group_discovery',
+        titleDefault: 'SDR Discovery',
+        descriptionKey: 'app_settings.group_discovery_help',
+        descriptionDefault: 'SoapySDR discovery startup and monitor behavior.',
+        fieldKeys: ['enable_soapy_discovery', 'runonce_soapy_discovery'],
+    },
+    {
+        key: 'orbital_sync',
+        titleKey: 'app_settings.group_orbital_sync',
+        titleDefault: 'Orbital Sync Sources',
+        descriptionKey: 'app_settings.group_orbital_sync_help',
+        descriptionDefault: 'Satellite and transmitter metadata endpoints used during orbital synchronization.',
+        fieldKeys: ['orbital_sync_satellite_metadata_urls', 'orbital_sync_transmitter_urls'],
+    },
+    {
+        key: 'celestial_sync',
+        titleKey: 'app_settings.group_celestial_sync',
+        titleDefault: 'Celestial Sync',
+        descriptionKey: 'app_settings.group_celestial_sync_help',
+        descriptionDefault: 'Monitored celestial periodic synchronization settings.',
+        fieldKeys: [
+            'celestial_periodic_sync_enabled',
+            'celestial_periodic_sync_interval_minutes',
+            'celestial_sync_past_hours',
+        ],
+    },
+];
+
 const getSettingCardBackground = (applyMode, theme) => {
     void applyMode;
     return theme.palette.mode === 'dark'
-        ? alpha(theme.palette.grey[900], 0.22)
-        : alpha(theme.palette.grey[700], 0.14);
+        ? alpha(theme.palette.grey[700], 0.18)
+        : alpha(theme.palette.grey[100], 0.9);
 };
 
 const formatFieldName = (key) =>
@@ -145,6 +216,25 @@ const buildDraftFromPayload = (payload) => {
     return nextDraft;
 };
 
+const getApplyModeMeta = (applyMode, t) => {
+    if (applyMode === 'hot') {
+        return {
+            label: t('app_settings.apply_mode_hot', { defaultValue: 'Hot Apply' }),
+            color: 'success',
+        };
+    }
+    if (applyMode === 'restart_required') {
+        return {
+            label: t('app_settings.apply_mode_restart', { defaultValue: 'Restart Required' }),
+            color: 'warning',
+        };
+    }
+    return {
+        label: t('app_settings.apply_mode_other', { defaultValue: 'Other' }),
+        color: 'default',
+    };
+};
+
 const AppSettingsForm = () => {
     const { socket } = useSocket();
     const { t } = useTranslation('settings');
@@ -175,49 +265,35 @@ const AppSettingsForm = () => {
     const isDirty = changedKeys.length > 0;
 
     const groupedFields = useMemo(() => {
-        const groups = {
-            restart_required: [],
-            hot: [],
-            other: [],
-        };
+        const fieldsByKey = new Map(fields.map((field) => [field.key, field]));
+        const claimed = new Set();
 
-        // Keep original backend field order while grouping by apply mode for easier scanning.
-        fields.forEach((field) => {
-            if (field.apply_mode === 'restart_required') {
-                groups.restart_required.push(field);
-                return;
-            }
-            if (field.apply_mode === 'hot') {
-                groups.hot.push(field);
-                return;
-            }
-            groups.other.push(field);
-        });
+        const groups = SETTINGS_GROUP_DEFS.map((def) => {
+            const groupFields = def.fieldKeys
+                .map((fieldKey) => fieldsByKey.get(fieldKey))
+                .filter(Boolean);
+            groupFields.forEach((field) => claimed.add(field.key));
+            return {
+                key: def.key,
+                title: t(def.titleKey, { defaultValue: def.titleDefault }),
+                description: t(def.descriptionKey, { defaultValue: def.descriptionDefault }),
+                fields: groupFields,
+            };
+        }).filter((group) => group.fields.length > 0);
 
-        return [
-            {
-                key: 'restart_required',
-                title: t('app_settings.group_restart_required', { defaultValue: 'Restart Required' }),
-                description: t('app_settings.group_restart_required_help', {
-                    defaultValue: 'Changes in this section need a service restart before taking effect.',
-                }),
-                fields: groups.restart_required,
-            },
-            {
-                key: 'hot',
-                title: t('app_settings.group_hot_apply', { defaultValue: 'Hot Apply' }),
-                description: t('app_settings.group_hot_apply_help', {
-                    defaultValue: 'Changes in this section are applied immediately.',
-                }),
-                fields: groups.hot,
-            },
-            {
+        const otherFields = fields.filter((field) => !claimed.has(field.key));
+        if (otherFields.length > 0) {
+            groups.push({
                 key: 'other',
                 title: t('app_settings.group_other', { defaultValue: 'Other Settings' }),
-                description: '',
-                fields: groups.other,
-            },
-        ].filter((group) => group.fields.length > 0);
+                description: t('app_settings.group_other_help', {
+                    defaultValue: 'Additional runtime settings that do not match a specific subsystem group.',
+                }),
+                fields: otherFields,
+            });
+        }
+
+        return groups;
     }, [fields, t]);
 
     const statusLabel = saving
@@ -354,6 +430,22 @@ const AppSettingsForm = () => {
         const value = draft[fieldKey];
         const validationMessage = validationErrors[fieldKey];
         const hasChoices = Array.isArray(field.choices) && field.choices.length > 0;
+        const helperTextSx = {
+            backgroundColor: 'transparent !important',
+            color: (theme) => `${theme.palette.text.primary} !important`,
+            opacity: 0.84,
+            m: 0,
+            mt: 0.5,
+            px: 0,
+            py: 0,
+            '&.Mui-error': {
+                color: (theme) => `${theme.palette.error.main} !important`,
+                opacity: 1,
+            },
+            '&.Mui-disabled': {
+                opacity: 0.6,
+            },
+        };
         const rangeHelper = field.minimum != null || field.maximum != null
             ? `Range: ${field.minimum ?? '-inf'} .. ${field.maximum ?? '+inf'}`
             : '';
@@ -405,6 +497,7 @@ const AppSettingsForm = () => {
                     helperText={validationMessage || helperText}
                     error={Boolean(validationMessage)}
                     disabled={loading || saving}
+                    FormHelperTextProps={{ sx: helperTextSx }}
                 />
             );
         }
@@ -421,6 +514,7 @@ const AppSettingsForm = () => {
                     helperText={validationMessage || helperText}
                     error={Boolean(validationMessage)}
                     disabled={loading || saving}
+                    FormHelperTextProps={{ sx: helperTextSx }}
                 >
                     {field.choices.map((choice) => (
                         <MenuItem key={`${fieldKey}-${choice}`} value={String(choice)}>
@@ -446,6 +540,7 @@ const AppSettingsForm = () => {
                 helperText={validationMessage || helperText}
                 error={Boolean(validationMessage)}
                 disabled={loading || saving}
+                FormHelperTextProps={{ sx: helperTextSx }}
                 inputProps={isInteger ? { min: field.minimum, max: field.maximum, step: 1 } : undefined}
                 InputProps={
                     isSensitive
@@ -491,7 +586,7 @@ const AppSettingsForm = () => {
                 <SettingsSurfaceHeader
                     title={t('app_settings.title', { defaultValue: 'Application Settings' })}
                     subtitle={t('app_settings.subtitle', {
-                        defaultValue: 'Manage backend configuration values and apply-mode behavior.',
+                        defaultValue: 'Manage backend runtime configuration by subsystem.',
                     })}
                     status={{ label: statusLabel, color: statusColor }}
                     onReload={loadConfig}
@@ -563,11 +658,6 @@ const AppSettingsForm = () => {
                         key={group.key}
                         title={group.title}
                         description={group.description || null}
-                        meta={(
-                            <Typography variant="caption" color="text.secondary">
-                                {`${group.fields.length} ${t('app_settings.fields_suffix', { defaultValue: 'fields' })}`}
-                            </Typography>
-                        )}
                     >
                         <Grid container spacing={1.25} columns={12}>
                             {group.fields.map((field) => {
@@ -575,6 +665,18 @@ const AppSettingsForm = () => {
                                 const locked = Boolean(payload?.locked?.[field.key]);
                                 const definedInFile = Boolean(payload?.defined_in_file?.[field.key]);
                                 const forceFullWidth = field.value_type === 'string_list' || field.value_type === 'boolean';
+                                const applyModeMeta = getApplyModeMeta(field.apply_mode, t);
+                                const applyModeChipSx = field.apply_mode === 'restart_required'
+                                    ? {
+                                        height: 16,
+                                        '& .MuiChip-label': {
+                                            px: 0.6,
+                                            fontSize: '0.6rem',
+                                            lineHeight: 1.1,
+                                            fontWeight: 400,
+                                        },
+                                    }
+                                    : undefined;
                                 return (
                                     <Grid
                                         key={field.key}
@@ -593,24 +695,37 @@ const AppSettingsForm = () => {
                                                 gap: 1,
                                             }}
                                         >
-                                            <Stack spacing={0.4}>
-                                                <Typography variant="subtitle2">
+                                            <Typography
+                                                variant="body2"
+                                                title={`${formatFieldName(field.key)} (${field.key}) ${field.description}`}
+                                                sx={{
+                                                    fontSize: { xs: '0.68rem', sm: '0.78rem', md: '0.82rem' },
+                                                    lineHeight: 1.2,
+                                                    whiteSpace: 'nowrap',
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    minWidth: 0,
+                                                }}
+                                            >
+                                                <Box component="span" sx={{ fontWeight: 600, color: 'text.primary' }}>
                                                     {formatFieldName(field.key)}
-                                                    <Typography
-                                                        component="span"
-                                                        variant="caption"
-                                                        color="text.disabled"
-                                                        sx={{ ml: 0.75, fontWeight: 400 }}
-                                                    >
-                                                        ({field.key})
-                                                    </Typography>
-                                                </Typography>
-                                                <Typography variant="body2" color="text.secondary">
+                                                </Box>
+                                                <Box component="span" sx={{ ml: 0.5, color: 'text.disabled' }}>
+                                                    ({field.key})
+                                                </Box>
+                                                <Box component="span" sx={{ ml: 0.75, color: 'text.secondary' }}>
                                                     {field.description}
-                                                </Typography>
-                                            </Stack>
+                                                </Box>
+                                            </Typography>
 
                                             <SettingsMetaRow>
+                                                <Chip
+                                                    size="small"
+                                                    color={applyModeMeta.color}
+                                                    label={applyModeMeta.label}
+                                                    variant="outlined"
+                                                    sx={applyModeChipSx}
+                                                />
                                                 <Typography variant="caption" color="text.secondary">
                                                     {t('app_settings.source_text', {
                                                         defaultValue: 'Source: {{source}}',
@@ -637,7 +752,7 @@ const AppSettingsForm = () => {
                     </SettingsSection>
                 ))}
 
-                <SettingsActionFooter statusText={footerStatusText}>
+                <SettingsActionFooter statusText={footerStatusText} sticky>
                     <Button variant="outlined" onClick={handleReset} disabled={saving || loading || !isDirty}>
                         {t('app_settings.reset', { defaultValue: 'Reset' })}
                     </Button>

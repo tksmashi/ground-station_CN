@@ -72,6 +72,16 @@ export function SettingsTabPreferences() {
     );
 }
 
+export function SettingsTabIntegrations() {
+    return (
+        <SettingsTabs
+            initialMainTab={"settings"}
+            initialTab={"settings"}
+            initialSettingsSubTab={"integrations"}
+        />
+    );
+}
+
 export function SettingsTabSettings() {
     return (
         <SettingsTabs
@@ -156,6 +166,8 @@ export const SettingsTabs = React.memo(function SettingsTabs({
                 return "settings";
             case "/settings/preferences":
                 return "settings";
+            case "/settings/integrations":
+                return "settings";
             case "/settings/location":
                 return "location";
             case "/settings/maintenance":
@@ -222,7 +234,13 @@ export const SettingsTabs = React.memo(function SettingsTabs({
         case "settings":
             activeTabContent = (
                 <SettingsAndPreferencesForm
-                    initialSubTab={location.pathname === "/settings/preferences" ? "preferences" : initialSettingsSubTab}
+                    initialSubTab={
+                        location.pathname === "/settings/preferences"
+                            ? "preferences"
+                            : location.pathname === "/settings/integrations"
+                                ? "integrations"
+                                : initialSettingsSubTab
+                    }
                 />
             );
             break;
@@ -338,7 +356,9 @@ const SettingsAndPreferencesForm = React.memo(function SettingsAndPreferencesFor
     const navigate = useNavigate();
 
     const resolveSubTabFromPath = React.useCallback((pathname) => {
-        return pathname === "/settings/preferences" ? "preferences" : "settings";
+        if (pathname === "/settings/preferences") return "preferences";
+        if (pathname === "/settings/integrations") return "integrations";
+        return "settings";
     }, []);
 
     const [activeSubTab, setActiveSubTab] = React.useState(() => initialSubTab || "settings");
@@ -359,7 +379,12 @@ const SettingsAndPreferencesForm = React.memo(function SettingsAndPreferencesFor
             return;
         }
 
-        const nextPath = nextTab === "preferences" ? "/settings/preferences" : "/settings/settings";
+        let nextPath = "/settings/settings";
+        if (nextTab === "preferences") {
+            nextPath = "/settings/preferences";
+        } else if (nextTab === "integrations") {
+            nextPath = "/settings/integrations";
+        }
         navigate(nextPath);
     };
 
@@ -379,9 +404,11 @@ const SettingsAndPreferencesForm = React.memo(function SettingsAndPreferencesFor
                 }}
             >
                 <AntTab key="preferences" value="preferences" label={t('tabs.preferences')} />
+                <AntTab key="integrations" value="integrations" label={t('tabs.integrations', { defaultValue: 'Integrations' })} />
                 <AntTab key="settings" value="settings" label={t('tabs.settings')} />
             </AntTabs>
-            {activeSubTab === "preferences" ? <PreferencesForm/> : <AppSettingsForm/>}
+            {(activeSubTab === "preferences" || activeSubTab === "integrations") ? <PreferencesForm mode={activeSubTab} /> : null}
+            {activeSubTab === "settings" ? <AppSettingsForm/> : null}
         </Box>
     );
 });

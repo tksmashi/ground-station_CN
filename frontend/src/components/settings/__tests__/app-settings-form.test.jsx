@@ -184,7 +184,7 @@ describe('app-settings-form', () => {
         expect(toastErrorMock).toHaveBeenCalledWith('One or more settings are invalid');
     });
 
-    it('groups fields by apply mode in section blocks', async () => {
+    it('groups fields by subsystem in section blocks', async () => {
         const initialPayload = buildPayload({ portApplyMode: 'hot' });
 
         socketValue = {
@@ -198,8 +198,7 @@ describe('app-settings-form', () => {
         render(<AppSettingsForm />);
 
         await screen.findByLabelText('Host');
-        expect(screen.getAllByText('Restart Required').length).toBeGreaterThan(0);
-        expect(screen.getAllByText('Hot Apply').length).toBeGreaterThan(0);
+        expect(screen.getByRole('heading', { name: 'Network' })).toBeInTheDocument();
         expect(screen.getAllByText('Saved').length).toBeGreaterThan(0);
     });
 });
