@@ -36,6 +36,8 @@ import {SatelliteAlt} from '@mui/icons-material';
 import HomeIcon from '@mui/icons-material/Home';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FilterCenterFocusIcon from '@mui/icons-material/FilterCenterFocus';
+import GpsFixedIcon from '@mui/icons-material/GpsFixed';
+import PanToolAltIcon from '@mui/icons-material/PanToolAlt';
 import SettingsIcon from '@mui/icons-material/Settings';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import {useDispatch, useSelector} from "react-redux";
@@ -59,6 +61,7 @@ import {
     fetchSatellite,
     getTrackingStateFromBackend,
     setSatelliteId,
+    setLockOnTarget,
     setTargetMapSetting,
 } from './target-slice.jsx';
 import {getMapCrsByTileLayerId, getTileLayerById} from "../common/tile-layers.jsx";
@@ -351,6 +354,24 @@ const FullscreenMapButton = React.memo(function FullscreenMapButton() {
     );
 });
 
+const FollowTargetModeButton = React.memo(function FollowTargetModeButton({ lockOnTarget, onToggle }) {
+    const { t } = useTranslation('target');
+    const tooltipTitle = lockOnTarget
+        ? t('map_controls.switch_to_free_pan', { defaultValue: 'Switch to free pan mode' })
+        : t('map_controls.switch_to_lock_on_target', { defaultValue: 'Switch to lock-on-target mode' });
+
+    return (
+        <Fab
+            size="small"
+            color={lockOnTarget ? 'primary' : 'default'}
+            aria-label={tooltipTitle}
+            onClick={onToggle}
+        >
+            {lockOnTarget ? <GpsFixedIcon/> : <PanToolAltIcon/>}
+        </Fab>
+    );
+});
+
 const TargetMapContainer = ({}) => {
     const {socket} = useSocket();
     const dispatch = useDispatch();
@@ -367,6 +388,7 @@ const TargetMapContainer = ({}) => {
         showMoonIcon,
         showTerminatorLine,
         showTooltip,
+        lockOnTarget,
         terminatorLine,
         daySidePolygon,
         pastOrbitLineColor,
@@ -721,6 +743,7 @@ const TargetMapContainer = ({}) => {
     useEffect(() => {
         if (!isSatelliteTarget) return;
         if (!MapObject) return;
+        if (!lockOnTarget) return;
 
         const selectedNoradId = String(noradId ?? '');
         const loadedNoradId = String(satelliteDetails?.norad_id ?? '');
@@ -754,6 +777,7 @@ const TargetMapContainer = ({}) => {
         satellitePosition?.lon,
         satelliteCoverage,
         showSatelliteCoverage,
+        lockOnTarget,
     ]);
 
     useEffect(() => {
@@ -839,6 +863,13 @@ const TargetMapContainer = ({}) => {
     const handleOpenSettings = useCallback(() => {
         dispatch(setOpenMapSettingsDialog(true));
     }, [dispatch]);
+    const handleToggleLockOnTarget = useCallback(() => {
+        const nextLockOnTarget = !lockOnTarget;
+        dispatch(setLockOnTarget(nextLockOnTarget));
+        if (socket) {
+            dispatch(setTargetMapSetting({socket, key: 'target-map-settings'}));
+        }
+    }, [dispatch, lockOnTarget, socket]);
 
     if (!isSatelliteTarget) {
         const scopedTargetRows = Array.isArray(nonSatelliteScene?.celestial) ? nonSatelliteScene.celestial : [];
@@ -976,6 +1007,15 @@ const TargetMapContainer = ({}) => {
                 )}
 
                 <Box sx={{'& > :not(style)': {m: 1}}} style={{right: 5, top: 5, position: 'absolute'}}>
+                    <Tooltip
+                        title={lockOnTarget
+                            ? t('map_controls.lock_on_target_enabled', { defaultValue: 'Lock on target is enabled' })
+                            : t('map_controls.lock_on_target_disabled', { defaultValue: 'Free pan mode is enabled' })}
+                    >
+                        <span>
+                            <FollowTargetModeButton lockOnTarget={lockOnTarget} onToggle={handleToggleLockOnTarget}/>
+                        </span>
+                    </Tooltip>
                     <CenterHomeButton/>
                     <CenterMapButton/>
                     <FullscreenMapButton/>
@@ -1032,7 +1072,8 @@ const TargetMapContainer = ({}) => {
                 {showSatelliteCoverage ? currentSatellitesCoverage : null}
 
 
-                <MapArrowControls mapObject={MapObject}/>
+                {/* Arrow panning is only available in free-pan mode. */}
+                {!lockOnTarget ? <MapArrowControls mapObject={MapObject}/> : null}
 
                 {showGrid && (
                     <CoordinateGrid
