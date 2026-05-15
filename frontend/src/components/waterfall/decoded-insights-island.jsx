@@ -17,7 +17,7 @@
  *
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Box, Chip, Divider, Tooltip, Typography, useTheme } from '@mui/material';
 import { DataGrid, gridClasses } from '@mui/x-data-grid';
 import { alpha } from '@mui/material/styles';
@@ -31,7 +31,6 @@ import {
     WaterfallStatusBarPaper,
 } from '../common/common.jsx';
 import DecodedPacketsDrawer from './decoded-packets-drawer.jsx';
-import { useSocket } from '../common/socket.jsx';
 import { useUserTimeSettings } from '../../hooks/useUserTimeSettings.jsx';
 import { formatDateTime, formatTime } from '../../utils/date-time.js';
 import {
@@ -152,46 +151,6 @@ function getStateForEvent(eventType, message, fallbackState = 'detected') {
     return fallbackState;
 }
 
-function getMatchDisplayStatus(matchEntry) {
-    if (!matchEntry) return 'pending';
-    return matchEntry.status;
-}
-
-function buildSearchQuery(satellite) {
-    return `${satellite.constellation} PRN ${String(satellite.prn).padStart(2, '0')}`;
-}
-
-function pickBestSatelliteMatch(candidates, satellite) {
-    if (!Array.isArray(candidates) || candidates.length === 0) {
-        return null;
-    }
-
-    const prn = String(satellite.prn);
-    const constellation = String(satellite.constellation || '').toLowerCase();
-
-    const scored = candidates.map((candidate) => {
-        const haystack = [
-            candidate?.name,
-            candidate?.name_other,
-            candidate?.alternative_name,
-        ]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase();
-
-        let score = 0;
-        if (haystack.includes(constellation)) score += 2;
-        if (haystack.includes(`prn ${prn}`)) score += 4;
-        if (haystack.includes(`prn${prn}`)) score += 3;
-        if (haystack.includes(prn)) score += 1;
-
-        return { candidate, score };
-    });
-
-    scored.sort((a, b) => b.score - a.score);
-    return scored[0].candidate;
-}
-
 function toFiniteNumber(value) {
     const parsed = Number(value);
     return Number.isFinite(parsed) ? parsed : null;
@@ -224,11 +183,8 @@ const LastSeenFormatter = React.memo(function LastSeenFormatter({ value, nowMs, 
 const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
     const dispatch = useDispatch();
     const theme = useTheme();
-    const { socket } = useSocket();
     const { timezone, locale } = useUserTimeSettings();
-    const inflightMatchesRef = useRef(new Set());
     const [selectedSatelliteId, setSelectedSatelliteId] = useState(null);
-    const [satelliteMatches, setSatelliteMatches] = useState({});
     const [relativeNowMs, setRelativeNowMs] = useState(() => Date.now());
 
     const {
@@ -312,6 +268,8 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
                     longitude: null,
                     altitudeM: null,
                     fixQuality: null,
+                    matchedNorad: null,
+                    matchedName: '-',
                     events: [],
                 });
             }
@@ -333,6 +291,13 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
             if (output.longitude !== undefined && output.longitude !== null) row.longitude = output.longitude;
             if (output.altitude_m !== undefined && output.altitude_m !== null) row.altitudeM = output.altitude_m;
             if (output.fix_quality !== undefined && output.fix_quality !== null) row.fixQuality = output.fix_quality;
+            const matchedNorad = toFiniteNumber(output.satellite_norad_id);
+            if (matchedNorad !== null) {
+                row.matchedNorad = matchedNorad;
+            }
+            if (String(output.satellite_name || '').trim()) {
+                row.matchedName = String(output.satellite_name).trim();
+            }
 
             row.events.push({
                 timestampMs: item.timestampMs,
@@ -512,68 +477,11 @@ const DecodedInsightsIsland = React.memo(function DecodedInsightsIsland() {
         return () => window.clearInterval(interval);
     }, []);
 
-    // Resolve unknown GNSS satellites against the local satellite DB incrementally
-    // so UI remains responsive even when many rows appear at once.
-    useEffect(() => {
-        if (!socket || satelliteRows.length === 0) {
-            return;
-        }
-
-        let started = 0;
-        for (const satellite of satelliteRows) {
-            if (started >= 3) break;
-            if (satelliteMatches[satellite.id] || inflightMatchesRef.current.has(satellite.id)) continue;
-
-            started += 1;
-            const query = buildSearchQuery(satellite);
-            inflightMatchesRef.current.add(satellite.id);
-            setSatelliteMatches((prev) => ({
-                ...prev,
-                [satellite.id]: { status: 'loading', query },
-            }));
-
-            socket.emit('data_request', 'get-satellite-search', query, (response) => {
-                inflightMatchesRef.current.delete(satellite.id);
-
-                if (!response?.success) {
-                    setSatelliteMatches((prev) => ({
-                        ...prev,
-                        [satellite.id]: { status: 'error', query, error: response?.error || 'Search failed' },
-                    }));
-                    return;
-                }
-
-                const candidates = Array.isArray(response?.data) ? response.data : [];
-                const best = pickBestSatelliteMatch(candidates, satellite);
-                setSatelliteMatches((prev) => ({
-                    ...prev,
-                    [satellite.id]: best
-                        ? { status: 'matched', query, match: best, candidates: candidates.length }
-                        : { status: 'none', query, candidates: 0 },
-                }));
-            });
-        }
-    }, [satelliteMatches, satelliteRows, socket]);
-
     const selectedSatellite = useMemo(() => {
         return satelliteRows.find((row) => row.id === selectedSatelliteId) || null;
     }, [satelliteRows, selectedSatelliteId]);
 
-    const gnssGridRows = useMemo(() => {
-        return satelliteRows.map((row) => {
-            const matchEntry = satelliteMatches[row.id];
-            const matchStatus = getMatchDisplayStatus(matchEntry);
-            const matchedName = matchEntry?.match?.name || '-';
-            const matchedNorad = matchEntry?.match?.norad_id || null;
-
-            return {
-                ...row,
-                matchStatus,
-                matchedName,
-                matchedNorad,
-            };
-        });
-    }, [satelliteRows, satelliteMatches]);
+    const gnssGridRows = satelliteRows;
 
     const gnssColumns = useMemo(() => ([
         {
