@@ -1,0 +1,112 @@
+name: Chinese Docker Build Test
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/chinese-docker-build.yml
+      - backend/**
+      - frontend/**
+
+env:
+  IMAGE_NAME: ground-station:zh-cn-test
+
+permissions:
+  contents: read
+
+jobs:
+  docker-build-zh-cn:
+    name: Build Docker Image for Chinese Environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          echo "Disk space before cleanup:"
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          echo "Disk space after cleanup:"
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Prepare build metadata
+        id: metadata
+        run: |
+          echo "build_date=$(date -u +'%Y%m%d')" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ${{ env.IMAGE_NAME }}
+          build-args: |
+            GS_ENVIRONMENT=zh-cn-test
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.metadata.outputs.build_date }}
+            BUILD_VERSION=zh-cn-${{ github.run_number }}-${{ steps.metadata.outputs.short_sha }}
+          cache-from: type=gha,scope=zh-cn-docker-build
+          cache-to: type=gha,mode=max,scope=zh-cn-docker-build
+
+      - name: Start container with Chinese locale settings
+        run: |
+          mkdir -p "${{ runner.temp }}/ground-station-data"
+          docker run -d \
+            --name ground-station-zh-cn \
+            -p 7000:7000 \
+            -v "${{ runner.temp }}/ground-station-data:/app/backend/data" \
+            -e LANG=C.UTF-8 \
+            -e LC_ALL=C.UTF-8 \
+            -e LANGUAGE=zh_CN:zh \
+            -e TZ=Asia/Shanghai \
+            -e GS_BACKEND_HOST=0.0.0.0 \
+            -e GS_BACKEND_PORT=7000 \
+            ${{ env.IMAGE_NAME }}
+
+      - name: Wait for backend to be ready
+        run: |
+          echo "Waiting for backend to start..."
+          for i in {1..90}; do
+            if curl -f http://localhost:7000/api/health 2>/dev/null || curl -f http://localhost:7000/ 2>/dev/null; then
+              echo "Backend is ready."
+              exit 0
+            fi
+            if [ "$i" -eq 90 ]; then
+              echo "Backend failed to start in time."
+              docker logs ground-station-zh-cn 2>&1 || echo "Container logs not available"
+              exit 1
+            fi
+            echo "Waiting for backend... ($i/90)"
+            sleep 1
+          done
+
+      - name: Verify container environment
+        run: |
+          docker exec ground-station-zh-cn /bin/sh -c 'printf "LANG=%s\nLC_ALL=%s\nLANGUAGE=%s\nTZ=%s\n" "$LANG" "$LC_ALL" "$LANGUAGE" "$TZ"'
+          curl -f http://localhost:7000/ >/dev/null
+
+      - name: Show container logs
+        if: always()
+        run: docker logs ground-station-zh-cn 2>&1 || echo "Container logs not available"
+
+      - name: Stop container
+        if: always()
+        run: |
+          docker stop ground-station-zh-cn || true
+          docker rm ground-station-zh-cn || true
